@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/btcsuite/golangcrypto/ripemd160"
+	"github.com/mr-tron/base58"
 )
 
 var (
@@ -24,6 +28,7 @@ var (
 	genPointY, _ = new(big.Int).SetString("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8", 16)
 	pow256       big.Int
 	pow256M1     = pow256.Exp(two, big.NewInt(256), nil).Sub(&pow256, one)
+	precomputes  = getPrecomputes()
 )
 
 type JacobianPoint struct {
@@ -59,8 +64,8 @@ var secp256k1 = Secp256k1{
 
 var identityPoint = &JacobianPoint{
 	X: pCurve,
-	Y: big.NewInt(0),
-	Z: big.NewInt(1),
+	Y: zero,
+	Z: one,
 }
 
 // IsOdd checks if the given big.Int is odd.
@@ -203,7 +208,207 @@ func ecDbl(p *JacobianPoint) *JacobianPoint {
 
 }
 
+func getPrecomputes() []*JacobianPoint {
+	precomputes := make([]*JacobianPoint, 256)
+	dbl := secp256k1.GenPoint
+	for i := range 256 {
+		precomputes[i] = dbl
+		dbl = ecDbl(dbl)
+	}
+	return precomputes
+}
+
+// ecAdd performs elliptic curve point addition in Jacobian coordinates for the secp256k1 curve.
+//
+// It takes two JacobianPoint points p and q as input parameters and returns a JacobianPoint point.
+//
+// Parameters:
+// - p: a pointer to a JacobianPoint representing the first point.
+// - q: a pointer to a JacobianPoint representing the second point.
+//
+// Returns:
+// - a pointer to a JacobianPoint representing the sum of p and q.
+//
+// Fast Prime Field Elliptic Curve Cryptography with 256 Bit Primes
+// Shay Gueron, Vlad Krasnov
+// https://eprint.iacr.org/2013/816.pdf page 4
+func ecAdd(p, q *JacobianPoint) *JacobianPoint {
+	var PZ2, QZ2, U1, U2, S1, S2, H, R, H2, H3, x, tx, y, ty, z big.Int
+	if p.X.Cmp(secp256k1.PCurve) == 0 {
+		return q
+	}
+	if q.X.Cmp(secp256k1.PCurve) == 0 {
+		return p
+	}
+	PZ2.Mul(p.Z, p.Z)
+	QZ2.Mul(q.Z, q.Z)
+	U1.Mul(p.X, &QZ2).Mod(&U1, secp256k1.PCurve)
+	U2.Mul(q.X, &PZ2).Mod(&U2, secp256k1.PCurve)
+	S1.Mul(p.Y, &QZ2).Mul(&S1, q.Z).Mod(&S1, secp256k1.PCurve)
+	S2.Mul(q.Y, &PZ2).Mul(&S2, p.Z).Mod(&S2, secp256k1.PCurve)
+
+	if U1.Cmp(&U2) == 0 {
+		if S1.Cmp(&S2) == 0 {
+			return ecDbl(p)
+		} else {
+			return identityPoint
+		}
+
+	}
+	H.Sub(&U2, &U1).Mod(&H, secp256k1.PCurve)
+	R.Sub(&S2, &S1).Mod(&R, secp256k1.PCurve)
+	H2.Mul(&H, &H).Mod(&H2, secp256k1.PCurve)
+	H3.Mul(&H2, &H).Mod(&H3, secp256k1.PCurve)
+	x.Mul(&R, &R).Sub(&x, &H3).Sub(&x, tx.Mul(two, &U1).Mul(&tx, &H2)).Mod(&x, secp256k1.PCurve)
+	y.Mul(&R, y.Mul(&U1, &H2).Sub(&y, &x)).Sub(&y, ty.Mul(&S1, &H3)).Mod(&y, secp256k1.PCurve)
+	z.Mul(&H, p.Z).Mul(&z, q.Z).Mod(&z, secp256k1.PCurve)
+	return &JacobianPoint{X: &x, Y: &y, Z: &z}
+
+}
+
+// ecMul performs elliptic curve multiplication.
+//
+// It takes two parameters:
+// - scalar: a pointer to a big.Int representing the scalar value.
+// - point: a pointer to a JacobianPoint representing the base point.
+//
+// It returns a pointer to a JacobianPoint representing the result of the multiplication.
+//
+// https://paulmillr.com/posts/noble-secp256k1-fast-ecc/#fighting-timing-attacks
+func ecMul(scalar *big.Int, point *JacobianPoint) *JacobianPoint {
+	var n, fakeN, x, y, z big.Int
+	n.Set(scalar)
+	p := &JacobianPoint{
+		X: pCurve,
+		Y: zero,
+		Z: one,
+	}
+	if point == nil {
+		fakeP := &JacobianPoint{
+			X: pCurve,
+			Y: zero,
+			Z: one,
+		}
+		fakeN.Xor(pow256M1, &n)
+		for _, q := range precomputes {
+			if IsOdd(&n) {
+				p = ecAdd(p, q)
+			} else {
+				fakeP = ecAdd(fakeP, q)
+			}
+			n.Rsh(&n, 1)
+			fakeN.Rsh(&fakeN, 1)
+
+		}
+	} else {
+		q := &JacobianPoint{
+			X: x.Set(point.X),
+			Y: y.Set(point.Y),
+			Z: z.Set(point.Z),
+		}
+		for n.Cmp(zero) == 1 {
+			if IsOdd(&n) {
+				p = ecAdd(p, q)
+			}
+			n.Rsh(&n, 1)
+			q = ecDbl(q)
+		}
+	}
+	return &JacobianPoint{X: p.X, Y: p.Y, Z: p.Z}
+}
+
+// joinBytes concatenates the byte slices in s into a single byte slice.
+//
+// s - variadic parameter containing byte slices to be concatenated.
+// Returns a byte slice.
+func joinBytes(s ...[]byte) []byte {
+	n := 0
+	for _, v := range s {
+		n += len(v)
+	}
+
+	b, i := make([]byte, n), 0
+	for _, v := range s {
+		i += copy(b[i:], v)
+	}
+	return b
+}
+
+// createRawPubKey generates a raw public key from a given private key.
+//
+// Parameters:
+// - privKey: a pointer to a big.Int representing the private key.
+// - safe: a boolean indicating whether to use a safe method for generating the public key.
+//
+// Returns:
+// - a pointer to a Point representing the raw public key.
+// - an error if the generated point is not on the curve.
+func createRawPubKey(privKey *big.Int, safe bool) (*Point, error) {
+	var rawPubKey *Point
+	if !safe {
+		rawPubKey = ToAffine(ecMul(privKey, secp256k1.GenPoint))
+	} else {
+		rawPubKey = ToAffine(ecMul(privKey, nil))
+	}
+	if !ValidPoint(rawPubKey) {
+		return nil, errors.New("point is not on curve")
+	}
+	return rawPubKey, nil
+}
+
+// createPubKey generates a public key in compressed or uncompressed format
+// from a given raw public key.
+//
+// Parameters:
+//   - rawPubKey: a pointer to a Point representing the raw public key.
+//   - uncompressed: a boolean indicating whether to return the public key in
+//     uncompressed format.
+//
+// Returns:
+// - a byte slice representing the public key in the specified format.
+func createPubKey(rawPubKey *Point, uncompressed bool) []byte {
+	var prefix uint8
+	if uncompressed {
+		return bytes.Join([][]byte{{4}, rawPubKey.X.Bytes(), rawPubKey.Y.Bytes()}, []byte(""))
+	}
+	if IsOdd(rawPubKey.Y) {
+		prefix = 3
+	} else {
+		prefix = 2
+	}
+	return joinBytes([][]byte{{prefix}, rawPubKey.X.Bytes()}...)
+}
+
+// checkSum calculates the checksum of the input byte slice using DoubleSHA256 and returns the first 4 bytes.
+//
+// Parameters:
+//   - v: the input byte slice to calculate the checksum.
+//
+// Returns:
+//   - A byte slice representing the calculated checksum.
+func checkSum(v []byte) []byte {
+	return DoubleSHA256(v)[:4]
+}
+
+// createAddress generates a Bitcoin address from a given public key.
+//
+// Parameters:
+// - pubKey: a byte slice representing the public key.
+//
+// Returns:
+// - a string representing the Bitcoin address.
+func createAddress(pubKey []byte) string {
+	address := joinBytes([][]byte{{0}, Ripemd160SHA256(pubKey)}...)
+	return base58.Encode(joinBytes([][]byte{address, checkSum(address)}...))
+}
+
 func main() {
-	fmt.Println(ecDbl(secp256k1.GenPoint))
-	fmt.Println(ecDbl(identityPoint))
+
+	key := big.NewInt(1000)
+	start := time.Now()
+	raw, _ := createRawPubKey(key, false)
+	pk := createPubKey(raw, true)
+	fmt.Println(createAddress(pk))
+	fmt.Println(time.Since(start))
+
 }
