@@ -1,14 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/golangcrypto/ripemd160"
 	"github.com/mr-tron/base58"
 )
@@ -29,6 +31,22 @@ var (
 	pow256       big.Int
 	pow256M1     = pow256.Exp(two, big.NewInt(256), nil).Sub(&pow256, one)
 	precomputes  = getPrecomputes()
+	secp256k1    = Secp256k1{
+		PCurve: pCurve,
+		NCurve: nCurve,
+		ACurve: aCurve,
+		BCurve: bCurve,
+		GenPoint: &JacobianPoint{
+			X: genPointX,
+			Y: genPointY,
+			Z: one,
+		},
+	}
+	identityPoint = &JacobianPoint{
+		X: pCurve,
+		Y: zero,
+		Z: one,
+	}
 )
 
 type JacobianPoint struct {
@@ -48,24 +66,6 @@ type Secp256k1 struct {
 	ACurve   *big.Int
 	BCurve   *big.Int
 	GenPoint *JacobianPoint
-}
-
-var secp256k1 = Secp256k1{
-	PCurve: pCurve,
-	NCurve: nCurve,
-	ACurve: aCurve,
-	BCurve: bCurve,
-	GenPoint: &JacobianPoint{
-		X: genPointX,
-		Y: genPointY,
-		Z: one,
-	},
-}
-
-var identityPoint = &JacobianPoint{
-	X: pCurve,
-	Y: zero,
-	Z: one,
 }
 
 // IsOdd checks if the given big.Int is odd.
@@ -211,7 +211,7 @@ func ecDbl(p *JacobianPoint) *JacobianPoint {
 func getPrecomputes() []*JacobianPoint {
 	precomputes := make([]*JacobianPoint, 256)
 	dbl := secp256k1.GenPoint
-	for i := range 256 {
+	for i := range len(precomputes) {
 		precomputes[i] = dbl
 		dbl = ecDbl(dbl)
 	}
@@ -338,18 +338,12 @@ func joinBytes(s ...[]byte) []byte {
 //
 // Parameters:
 // - privKey: a pointer to a big.Int representing the private key.
-// - safe: a boolean indicating whether to use a safe method for generating the public key.
 //
 // Returns:
 // - a pointer to a Point representing the raw public key.
 // - an error if the generated point is not on the curve.
-func createRawPubKey(privKey *big.Int, safe bool) (*Point, error) {
-	var rawPubKey *Point
-	if !safe {
-		rawPubKey = ToAffine(ecMul(privKey, secp256k1.GenPoint))
-	} else {
-		rawPubKey = ToAffine(ecMul(privKey, nil))
-	}
+func createRawPubKey(privKey *big.Int) (*Point, error) {
+	rawPubKey := ToAffine(ecMul(privKey, nil))
 	if !ValidPoint(rawPubKey) {
 		return nil, errors.New("point is not on curve")
 	}
@@ -369,12 +363,12 @@ func createRawPubKey(privKey *big.Int, safe bool) (*Point, error) {
 func createPubKey(rawPubKey *Point, uncompressed bool) []byte {
 	var prefix uint8
 	if uncompressed {
-		return bytes.Join([][]byte{{4}, rawPubKey.X.Bytes(), rawPubKey.Y.Bytes()}, []byte(""))
+		return joinBytes([][]byte{{0x04}, rawPubKey.X.Bytes(), rawPubKey.Y.Bytes()}...)
 	}
 	if IsOdd(rawPubKey.Y) {
-		prefix = 3
+		prefix = 0x03
 	} else {
-		prefix = 2
+		prefix = 0x02
 	}
 	return joinBytes([][]byte{{prefix}, rawPubKey.X.Bytes()}...)
 }
@@ -398,17 +392,100 @@ func checkSum(v []byte) []byte {
 // Returns:
 // - a string representing the Bitcoin address.
 func createAddress(pubKey []byte) string {
-	address := joinBytes([][]byte{{0}, Ripemd160SHA256(pubKey)}...)
+	address := joinBytes([][]byte{{0x00}, Ripemd160SHA256(pubKey)}...)
 	return base58.Encode(joinBytes([][]byte{address, checkSum(address)}...))
+}
+
+// createNestedSegwit generates a nested SegWit Bitcoin address from a given public key.
+//
+// Parameters:
+// - pubKey: a byte slice representing the public key.
+//
+// Returns:
+// - a string representing the nested SegWit Bitcoin address.
+func createNestedSegwit(pubKey []byte) string {
+	address := joinBytes([][]byte{{0x05}, Ripemd160SHA256(joinBytes([][]byte{{0x00, 0x14}, Ripemd160SHA256(pubKey)}...))}...)
+	return base58.Encode(joinBytes([][]byte{address, checkSum(address)}...))
+}
+
+// createNativeSegwit generates a native SegWit Bitcoin address from a given public key.
+//
+// Parameters:
+// - pubKey: a byte slice representing the public key.
+// Returns:
+// - a string representing the native SegWit Bitcoin address.
+func createNativeSegwit(pubKey []byte) (string, error) {
+	converted, err := bech32.ConvertBits(Ripemd160SHA256(pubKey), 8, 5, true)
+	if err != nil {
+		return "", err
+	}
+	combined := make([]byte, len(converted)+1)
+	combined[0] = byte(0)
+	copy(combined[1:], converted)
+	return bech32.Encode("bc", combined)
+}
+
+// varInt generates a variable-length integer in bytes based on the input length.
+//
+// Parameters:
+//   - length: an unsigned 64-bit integer representing the length to be encoded.
+//
+// Returns:
+//   - a byte slice representing the variable-length integer in bytes.
+//
+// https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer
+func varInt(length uint64) []byte {
+	var lenBytes int
+	var prefix byte
+
+	if length < 0xFD {
+		return []byte{uint8(length)}
+	}
+	if length <= 0xFFFF {
+		lenBytes = 2
+		prefix = 0xFD
+	} else if length <= 0xFFFFFFFF {
+		lenBytes = 4
+		prefix = 0xFE
+	} else if length <= 0xFFFFFFFFFFFFFFFF {
+		lenBytes = 8
+		prefix = 0xFF
+	}
+	bs := make([]byte, 9)
+	bs[0] = prefix
+	binary.LittleEndian.PutUint64(bs[1:], length)
+	return bs[:lenBytes+1]
+}
+
+// msgMagic generates a Bitcoin message magic byte sequence from the given message.
+//
+// Parameters:
+//   - msg: a string representing the message.
+//
+// Returns:
+//   - A byte slice representing the Bitcoin message magic byte sequence.
+//
+// https://bitcoin.stackexchange.com/questions/77324/how-are-bitcoin-signed-messages-generated
+func msgMagic(msg string) []byte {
+	message := []byte(msg)
+	return joinBytes([][]byte{{0x18}, []byte("Bitcoin Signed Message\n"), varInt(uint64(len(message))), message}...)
 }
 
 func main() {
 
 	key := big.NewInt(1000)
 	start := time.Now()
-	raw, _ := createRawPubKey(key, false)
-	pk := createPubKey(raw, true)
+	raw, _ := createRawPubKey(key)
+	pk := createPubKey(raw, false)
 	fmt.Println(createAddress(pk))
+	fmt.Println(createNestedSegwit(pk))
+	fmt.Println(hex.EncodeToString([]byte{5, 00, 20}))
+	addr, _ := createNativeSegwit(pk)
+	fmt.Println(addr)
+	fmt.Printf("uint64: %v\n", uint64(18446744073709551615))
+
+	fmt.Println(hex.EncodeToString(varInt(12356333474345788523)))
 	fmt.Println(time.Since(start))
+	fmt.Println(hex.EncodeToString(msgMagic("语言处理")))
 
 }
