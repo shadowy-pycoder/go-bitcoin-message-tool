@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -39,6 +40,7 @@ var (
 		GenPoint: NewJacobianPoint(genPointX, genPointY, one),
 	}
 	identityPoint = NewJacobianPoint(pCurve, zero, one)
+	addressTypes  = [3]string{"p2pkh", "p2wpkh-p2sh", "p2wpkh"}
 )
 
 type JacobianPoint struct {
@@ -210,9 +212,9 @@ func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
 			q.Dbl(q)
 		}
 	}
-	pt.X = new(big.Int).Set(pnt.X)
-	pt.Y = new(big.Int).Set(pnt.Y)
-	pt.Z = new(big.Int).Set(pnt.Z)
+	pt.X = pnt.X
+	pt.Y = pnt.Y
+	pt.Z = pnt.Z
 	return pt
 }
 
@@ -399,15 +401,16 @@ func createRawPubKey(privKey *big.Int) (*Point, error) {
 //   - a byte slice representing the public key in the specified format.
 func createPubKey(rawPubKey *Point, uncompressed bool) []byte {
 	var prefix uint8
+	buf := make([]byte, 32)
 	if uncompressed {
-		return joinBytes([][]byte{{0x04}, rawPubKey.X.Bytes(), rawPubKey.Y.Bytes()}...)
+		return joinBytes([][]byte{{0x04}, rawPubKey.X.FillBytes(buf), rawPubKey.Y.FillBytes(buf)}...)
 	}
 	if IsOdd(rawPubKey.Y) {
 		prefix = 0x03
 	} else {
 		prefix = 0x02
 	}
-	return joinBytes([][]byte{{prefix}, rawPubKey.X.Bytes()}...)
+	return joinBytes([][]byte{{prefix}, rawPubKey.X.FillBytes(buf)}...)
 }
 
 // checkSum calculates the checksum of the input byte slice using DoubleSHA256 and returns the first 4 bytes.
@@ -477,7 +480,6 @@ func varInt(length uint64) []byte {
 		lenBytes int
 		prefix   byte
 	)
-
 	if length < 0xFD {
 		return []byte{uint8(length)}
 	}
@@ -508,7 +510,7 @@ func varInt(length uint64) []byte {
 // https://bitcoin.stackexchange.com/questions/77324/how-are-bitcoin-signed-messages-generated
 func msgMagic(msg string) []byte {
 	message := []byte(msg)
-	return joinBytes([][]byte{{0x18}, []byte("Bitcoin Signed Message\n"), varInt(uint64(len(message))), message}...)
+	return joinBytes([][]byte{{0x18}, []byte("Bitcoin Signed Message:\n"), varInt(uint64(len(message))), message}...)
 }
 
 // signed calculates the signature of a message using the provided private key.
@@ -592,6 +594,114 @@ func deriveAddress(pubKey []byte, addrType string) (string, int, error) {
 
 }
 
+// splitSignature splits the given signature byte slice into its header byte and the r and s values.
+//
+// Parameters:
+//   - sig: the signature byte slice to be split.
+//
+// Returns:
+//   - header: the header byte of the signature.
+//   - r: a pointer to a big.Int representing the r value of the signature.
+//   - s: a pointer to a big.Int representing the s value of the signature.
+func splitSignature(sig []byte) (header byte, r, s *big.Int) {
+	return sig[0], new(big.Int).SetBytes(sig[1:33]), new(big.Int).SetBytes(sig[33:])
+}
+
+// VerifyMessage verifies a signed message using the provided address, message, signature, and electrum flag.
+//
+// Parameters:
+//   - address: the address used to sign the message.
+//   - message: the message to be verified.
+//   - signature: the signature to verify the message.
+//   - electrum: a flag indicating whether to use the electrum signature format.
+//
+// Returns:
+//   - bool: true if the message is verified, false otherwise.
+//   - string: the hex-encoded public key.
+//   - string: a message indicating whether the message was verified or not.
+//   - error: an error if any occurred during the verification process.
+func VerifyMessage(address, message, signature string, electrum bool) (bool, string, string, error) {
+	var (
+		x, y, alpha, beta, bt, z, e big.Int
+		p, q, Q, pk                 JacobianPoint
+	)
+	dSig := make([]byte, base64.StdEncoding.DecodedLen(len(signature)))
+	n, err := base64.StdEncoding.Decode(dSig, []byte(signature))
+	if err != nil {
+		fmt.Println("decode error:", err)
+		return false, "", "", err
+	}
+	if n != 65 {
+		return false, "", "", errors.New("signature must be 65 bytes long")
+	}
+	header, r, s := splitSignature(dSig[:n])
+	if header < 27 || header > 46 {
+		return false, "", "", errors.New("header byte out of range")
+	}
+	if r.Cmp(secp256k1.NCurve) >= 0 || r.Cmp(zero) == 0 {
+		return false, "", "", errors.New("r-value out of range")
+	}
+	if s.Cmp(secp256k1.NCurve) >= 0 || s.Cmp(zero) == 0 {
+		return false, "", "", errors.New("s-value out of range")
+	}
+	uncompressed := false
+	addrType := "p2pkh"
+	if header >= 43 {
+		header -= 16
+		addrType = ""
+	} else if header >= 39 {
+		header -= 12
+		addrType = "p2wpkh"
+	} else if header >= 35 {
+		header -= 8
+		addrType = "p2wpkh-p2sh"
+	} else if header >= 31 {
+		header -= 4
+	} else {
+		uncompressed = true
+	}
+	recId := big.NewInt(int64(header - 27))
+	x.Add(r, x.Mul(secp256k1.NCurve, new(big.Int).Rsh(recId, 1)))
+	alpha.Exp(&x, three, nil).Add(&alpha, secp256k1.BCurve).Mod(&alpha, secp256k1.PCurve)
+	beta.Exp(&alpha, bt.Add(secp256k1.PCurve, one).Rsh(&bt, 2), secp256k1.PCurve)
+	y.Set(&beta)
+	if IsOdd(new(big.Int).Sub(&beta, recId)) {
+		y.Sub(secp256k1.PCurve, &beta)
+	}
+	R := NewJacobianPoint(&x, &y, one)
+	mBytes := msgMagic(message)
+	z.SetBytes(DoubleSHA256(mBytes))
+	e.Set(new(big.Int).Neg(&z)).Mod(&e, secp256k1.NCurve)
+	p.Mul(s, R)
+	q.Mul(&e, secp256k1.GenPoint)
+	Q.Add(&p, &q)
+	rawPubKey := pk.Mul(ModInverse(r, secp256k1.NCurve), &Q).ToAffine()
+	pubKey := createPubKey(rawPubKey, uncompressed)
+	if electrum && !uncompressed {
+		for _, addrType := range addressTypes {
+			addr, _, err := deriveAddress(pubKey, addrType)
+			if err != nil {
+				panic(err)
+			}
+			if addr == address {
+				return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", address), nil
+			}
+		}
+		return false, hex.EncodeToString(pubKey), fmt.Sprintln("message failed to verify"), nil
+	}
+	if addrType == "" {
+		return false, "", "", errors.New("unknown address type")
+	}
+	addr, _, err := deriveAddress(pubKey, addrType)
+	if err != nil {
+		panic(err)
+	}
+	if addr == address {
+		return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", address), nil
+	}
+	return false, hex.EncodeToString(pubKey), fmt.Sprintln("message failed to verify"), nil
+}
+
 func main() {
 
 	key := big.NewInt(1000)
@@ -618,7 +728,6 @@ func main() {
 	fmt.Printf("%p\n", secp256k1.GenPoint.X)
 	fmt.Println(secp256k1.GenPoint)
 	var pr JacobianPoint
-	//fmt.Println(pr.Dbl(secp256k1.GenPoint, secp256k1.GenPoint).Eq(ecDbl(secp256k1.GenPoint)))
 	fmt.Println(pr.Mul(key, pr.Mul(key, secp256k1.GenPoint)))
 	fmt.Println(secp256k1.GenPoint)
 	fmt.Println(time.Since(start))
@@ -626,5 +735,8 @@ func main() {
 	fmt.Println(sign(th, th))
 	th2 := big.NewInt(10000)
 	fmt.Println(sign(th2, th2))
+	fmt.Println(sign(th2, th2))
+
+	fmt.Println(VerifyMessage("175A5YsPUdM71mnNCC3i8faxxYJgBonjWL", "ECDSA is the most fun I have ever experienced", "HyiLDcQQ1p2bKmyqM0e5oIBQtKSZds4kJQ+VbZWpr0kYA6Qkam2MlUeTr+lm1teUGHuLapfa43JjyrRqdSA0pxs=", true))
 
 }
