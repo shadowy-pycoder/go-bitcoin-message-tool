@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
@@ -40,7 +42,14 @@ var (
 		GenPoint: NewJacobianPoint(genPointX, genPointY, one),
 	}
 	identityPoint = NewJacobianPoint(pCurve, zero, one)
-	addressTypes  = [3]string{"p2pkh", "p2wpkh-p2sh", "p2wpkh"}
+	addressTypes  = [3]string{"legacy", "nested", "segwit"}
+	headers       = [5][4]byte{
+		{0x1b, 0x1c, 0x1d, 0x1e}, // 27 - 30 P2PKH uncompressed
+		{0x1f, 0x20, 0x21, 0x22}, // 31 - 34 P2PKH compressed
+		{0x23, 0x24, 0x25, 0x26}, // 35 - 38 P2WPKH-P2SH compressed (BIP-137)
+		{0x27, 0x28, 0x29, 0x2a}, // 39 - 42 P2WPKH compressed (BIP-137)
+		{0x2b, 0x2c, 0x2d, 0x2e}, // TODO 43 - 46 P2TR
+	}
 )
 
 type JacobianPoint struct {
@@ -277,6 +286,161 @@ type Signature struct {
 	S *big.Int
 }
 
+type BitcoinMessage struct {
+	Address   string
+	Data      string
+	Signature []byte
+}
+
+type PrivateKey struct {
+	raw          *big.Int
+	wif          *string
+	uncompressed bool
+}
+
+// generate generates a random big.Int value within the range of secp256k1.NCurve.
+//
+// It sets the value of the receiver PrivateKey's raw field to the generated random big.Int.
+func generate() *big.Int {
+	if n, err := rand.Int(rand.Reader, secp256k1.NCurve); err != nil {
+		panic(err)
+	} else {
+		return n
+	}
+}
+
+// NewPrivateKey generates a new PrivateKey object.
+//
+// It takes in two parameters:
+//   - raw: a pointer to a big.Int object representing the raw value of the private key.
+//   - wif: a pointer to a string representing the WIF (Wallet Import Format) of the private key.
+//
+// The function returns a pointer to a PrivateKey object and an error.
+//
+//   - If both raw and wif are provided, it returns an error.
+//   - If neither raw nor wif is provided, it generates a random private key and returns a new PrivateKey object.
+//   - If only wif is provided, it creates a new PrivateKey object with the provided WIF.
+//   - If only raw is provided, it creates a new PrivateKey object with the provided raw value.
+//
+// The function checks if the generated or provided private key is valid.
+// If the private key is invalid, it returns an error.
+//
+// The function also encodes the generated or provided private key using the Wif() method.
+// If the encoding fails, it returns an error.
+//
+// The function returns a pointer to the newly created PrivateKey object.
+func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
+	var pk PrivateKey
+	if raw != nil && wif != nil {
+		return nil, errors.New("cannot specify both raw and wif")
+	}
+	if raw == nil && wif == nil {
+		pk.raw = generate()
+		if !ValidKey(pk.raw) {
+			return nil, errors.New("scalar is invalid")
+		}
+		pk.uncompressed = false
+		encoded, err := pk.Wif(pk.uncompressed)
+		if err != nil {
+			return nil, err
+		}
+		pk.wif = encoded
+	} else if wif == nil {
+		pk.raw = new(big.Int).Set(raw)
+		if !ValidKey(pk.raw) {
+			return nil, errors.New("scalar is invalid")
+		}
+		pk.uncompressed = false
+		encoded, err := pk.Wif(pk.uncompressed)
+		if err != nil {
+			return nil, err
+		}
+		pk.wif = encoded
+	} else if raw == nil {
+		pk.wif = wif
+		uncompressed, err := pk.Int()
+		if err != nil {
+			return nil, err
+		}
+		pk.uncompressed = uncompressed
+	}
+	return &pk, nil
+}
+
+// SplitBytes splits the private key bytes into three parts: the version byte, the private key bytes, and the checksum bytes.
+//
+// It takes no parameters.
+// It returns three byte slices: the version byte, the private key bytes, and the checksum bytes.
+func (k *PrivateKey) SplitBytes() ([]byte, []byte, []byte) {
+	privkey, err := base58.Decode(*k.wif)
+	if err != nil {
+		panic(err)
+	}
+	pkLen := len(privkey)
+	return privkey[:1], privkey[1 : pkLen-4], privkey[pkLen-4:]
+}
+
+// Int calculates the integer value of the private key.
+//
+// It returns a boolean indicating if the key is uncompressed and an error if any.
+func (k *PrivateKey) Int() (bool, error) {
+	var (
+		privKeyInt   big.Int
+		uncompressed bool
+	)
+	if k.wif == nil {
+		return false, errors.New("invalid wif")
+	}
+	version, priVkey, checkSum := k.SplitBytes()
+	if !validCheckSum(version, priVkey, checkSum) {
+		return false, errors.New("invalid wif checksum")
+	}
+	if len(priVkey) == 33 {
+		privKeyInt.SetBytes(priVkey[:len(priVkey)-1])
+		uncompressed = false
+	} else {
+		privKeyInt.SetBytes(priVkey)
+		uncompressed = true
+	}
+	if !ValidKey(&privKeyInt) {
+		return false, errors.New("invalid scalar")
+	}
+	k.raw = &privKeyInt
+	return uncompressed, nil
+}
+
+// Wif generates the Wallet Import Format (WIF) for the private key.
+//
+// It takes a boolean uncompressed indicating if the key is uncompressed.
+// It returns a pointer to a string and an error.
+func (k *PrivateKey) Wif(uncompressed bool) (*string, error) {
+	if !ValidKey(k.raw) {
+		return nil, nil
+	}
+	buf := make([]byte, 32)
+	pk := joinBytes([][]byte{{0x80}, k.raw.FillBytes(buf), {0x01}}...)
+	if uncompressed {
+		pk = pk[:len(pk)-1]
+	}
+	converted := base58.Encode(joinBytes([][]byte{pk, checkSum(pk)}...))
+	k.wif = &converted
+	return k.wif, nil
+}
+
+// ValidKey checks if the given big.Int scalar is a valid key.
+//
+// Parameters:
+//   - scalar: a pointer to a big.Int representing the scalar value.
+//
+// Returns:
+//   - bool: true if the scalar is valid, false otherwise.
+func ValidKey(scalar *big.Int) bool {
+	if scalar == nil {
+		return false
+	}
+	return scalar.Cmp(zero) == 1 && scalar.Cmp(secp256k1.NCurve) == -1
+}
+
 // IsOdd checks if the given big.Int is odd.
 //
 // It takes a pointer to a big.Int as a parameter.
@@ -332,28 +496,6 @@ func Ripemd160SHA256(b []byte) []byte {
 	return r.Sum(nil)
 }
 
-// Generate generates a random big.Int value within the range of secp256k1.NCurve.
-//
-// It returns a pointer to a big.Int value.
-func Generate() *big.Int {
-	if n, err := rand.Int(rand.Reader, secp256k1.NCurve); err != nil {
-		panic(err)
-	} else {
-		return n
-	}
-}
-
-// ValidKey checks if the given big.Int scalar is a valid key.
-//
-// Parameters:
-//   - scalar: a pointer to a big.Int representing the scalar value.
-//
-// Returns:
-//   - bool: true if the scalar is valid, false otherwise.
-func ValidKey(scalar *big.Int) bool {
-	return scalar.Cmp(zero) == 1 && scalar.Cmp(secp256k1.NCurve) == -1
-}
-
 // joinBytes concatenates the byte slices in s into a single byte slice.
 //
 //   - s: variadic parameter containing byte slices to be concatenated.
@@ -401,16 +543,21 @@ func createRawPubKey(privKey *big.Int) (*Point, error) {
 //   - a byte slice representing the public key in the specified format.
 func createPubKey(rawPubKey *Point, uncompressed bool) []byte {
 	var prefix uint8
-	buf := make([]byte, 32)
+	buf := make([]byte, 65)
 	if uncompressed {
-		return joinBytes([][]byte{{0x04}, rawPubKey.X.FillBytes(buf), rawPubKey.Y.FillBytes(buf)}...)
+		buf[0] = 0x04
+		rawPubKey.X.FillBytes(buf[1:33])
+		rawPubKey.Y.FillBytes(buf[33:])
+		return buf
 	}
 	if IsOdd(rawPubKey.Y) {
 		prefix = 0x03
 	} else {
 		prefix = 0x02
 	}
-	return joinBytes([][]byte{{prefix}, rawPubKey.X.FillBytes(buf)}...)
+	buf[0] = prefix
+	rawPubKey.X.FillBytes(buf[1:33])
+	return buf[:33]
 }
 
 // checkSum calculates the checksum of the input byte slice using DoubleSHA256 and returns the first 4 bytes.
@@ -422,6 +569,10 @@ func createPubKey(rawPubKey *Point, uncompressed bool) []byte {
 //   - A byte slice representing the calculated checksum.
 func checkSum(v []byte) []byte {
 	return DoubleSHA256(v)[:4]
+}
+
+func validCheckSum(ver, privKey, checkSum []byte) bool {
+	return bytes.Equal(DoubleSHA256(joinBytes([][]byte{ver, privKey}...))[:4], checkSum)
 }
 
 // createAddress generates a Bitcoin address from a given public key.
@@ -522,7 +673,7 @@ func msgMagic(msg string) []byte {
 //
 // Returns:
 //   - *Signature: a pointer to a Signature struct containing the calculated signature components.
-func signed(privKey, msg, k *big.Int) *Signature {
+func signed(msg, privKey, k *big.Int) *Signature {
 	var (
 		r, s big.Int
 		p    JacobianPoint
@@ -561,29 +712,39 @@ func sign(privKey, msg *big.Int) *Signature {
 		sig *Signature
 	)
 	for {
-		k = Generate()
-		sig = signed(privKey, msg, k)
+		k = generate()
+		sig = signed(msg, privKey, k)
 		if sig != nil {
 			return sig
 		}
 	}
 }
 
+// deriveAddress generates a Bitcoin address based on the provided public key and address type.
+//
+// Parameters:
+//   - pubKey: a byte slice representing the public key.
+//   - addrType: a string representing the address type. Valid values are "legacy", "nested", and "segwit".
+//
+// Returns:
+//   - a string representing the Bitcoin address.
+//   - an integer representing the address type. 0 for legacy, 1 for nested, and 2 for segwit.
+//   - an error if the address type is invalid.
 func deriveAddress(pubKey []byte, addrType string) (string, int, error) {
 	prefix := pubKey[0]
 	if prefix == 0x04 {
-		if addrType != "p2pkh" {
+		if addrType != "legacy" {
 			return "", 0, errors.New("empty")
 		}
 		return createAddress(pubKey), 0, nil
 	}
-	if addrType == "p2pkh" {
+	if addrType == "legacy" {
 		return createAddress(pubKey), 1, nil
 	}
-	if addrType == "p2wpkh-p2sh" {
+	if addrType == "nested" {
 		return createNestedSegwit(pubKey), 2, nil
 	}
-	if addrType == "p2wpkh" {
+	if addrType == "segwit" {
 		if addr, err := createNativeSegwit(pubKey); err != nil {
 			return "", 0, err
 		} else {
@@ -620,13 +781,13 @@ func splitSignature(sig []byte) (header byte, r, s *big.Int) {
 //   - string: the hex-encoded public key.
 //   - string: a message indicating whether the message was verified or not.
 //   - error: an error if any occurred during the verification process.
-func VerifyMessage(address, message, signature string, electrum bool) (bool, string, string, error) {
+func VerifyMessage(message *BitcoinMessage, electrum bool) (bool, string, string, error) {
 	var (
 		x, y, alpha, beta, bt, z, e big.Int
 		p, q, Q, pk                 JacobianPoint
 	)
-	dSig := make([]byte, base64.StdEncoding.DecodedLen(len(signature)))
-	n, err := base64.StdEncoding.Decode(dSig, []byte(signature))
+	dSig := make([]byte, base64.StdEncoding.DecodedLen(len(message.Signature)))
+	n, err := base64.StdEncoding.Decode(dSig, message.Signature)
 	if err != nil {
 		fmt.Println("decode error:", err)
 		return false, "", "", err
@@ -634,6 +795,7 @@ func VerifyMessage(address, message, signature string, electrum bool) (bool, str
 	if n != 65 {
 		return false, "", "", errors.New("signature must be 65 bytes long")
 	}
+
 	header, r, s := splitSignature(dSig[:n])
 	if header < 27 || header > 46 {
 		return false, "", "", errors.New("header byte out of range")
@@ -645,16 +807,16 @@ func VerifyMessage(address, message, signature string, electrum bool) (bool, str
 		return false, "", "", errors.New("s-value out of range")
 	}
 	uncompressed := false
-	addrType := "p2pkh"
+	addrType := "legacy"
 	if header >= 43 {
 		header -= 16
 		addrType = ""
 	} else if header >= 39 {
 		header -= 12
-		addrType = "p2wpkh"
+		addrType = "segwit"
 	} else if header >= 35 {
 		header -= 8
-		addrType = "p2wpkh-p2sh"
+		addrType = "nested"
 	} else if header >= 31 {
 		header -= 4
 	} else {
@@ -669,7 +831,7 @@ func VerifyMessage(address, message, signature string, electrum bool) (bool, str
 		y.Sub(secp256k1.PCurve, &beta)
 	}
 	R := NewJacobianPoint(&x, &y, one)
-	mBytes := msgMagic(message)
+	mBytes := msgMagic(message.Data)
 	z.SetBytes(DoubleSHA256(mBytes))
 	e.Set(new(big.Int).Neg(&z)).Mod(&e, secp256k1.NCurve)
 	p.Mul(s, R)
@@ -683,8 +845,8 @@ func VerifyMessage(address, message, signature string, electrum bool) (bool, str
 			if err != nil {
 				panic(err)
 			}
-			if addr == address {
-				return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", address), nil
+			if addr == message.Address {
+				return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", message.Address), nil
 			}
 		}
 		return false, hex.EncodeToString(pubKey), fmt.Sprintln("message failed to verify"), nil
@@ -696,47 +858,141 @@ func VerifyMessage(address, message, signature string, electrum bool) (bool, str
 	if err != nil {
 		panic(err)
 	}
-	if addr == address {
-		return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", address), nil
+	if addr == message.Address {
+		return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", message.Address), nil
 	}
 	return false, hex.EncodeToString(pubKey), fmt.Sprintln("message failed to verify"), nil
 }
 
+// SignMessage generates a Bitcoin message signature using the provided private key, address type, message,
+// deterministic flag, and electrum flag.
+//
+// Parameters:
+//   - pk: A pointer to a PrivateKey struct representing the private key.
+//     Compressed private key will produce compressed public key and address.
+//     Uncompressed private key will only produce one address type - uncompressed legacy address
+//   - addrType: A string representing the address type. It can be either p2pkh (compressed and uncompressed),
+//     p2wpkh-p2sh or p2wpkh (only compressed).
+//   - message: A string representing the message.
+//   - deterministic: A boolean indicating whether the signature should be deterministic.
+//     If set to true, each unique combination of private key and message will yield only one signature
+//   - electrum: A boolean indicating whether the signature should be in Electrum format.
+//
+// Returns:
+//   - A pointer to a BitcoinMessage struct representing the signed message.
+//   - An error if there was a problem signing the message.
+func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electrum bool) (*BitcoinMessage, error) {
+	var (
+		r, s, msg     big.Int
+		sig           *Signature
+		signedMessage BitcoinMessage
+	)
+	mBytes := msgMagic(message)
+	msg.SetBytes(DoubleSHA256(mBytes))
+	rawPubKey, err := createRawPubKey(pk.raw)
+	if err != nil {
+		panic("error")
+	}
+	pubKey := createPubKey(rawPubKey, pk.uncompressed)
+	if !deterministic {
+		sig = sign(pk.raw, &msg)
+	} else {
+		panic("not implemented")
+	}
+	address, ver, err := deriveAddress(pubKey, addrType)
+	if err != nil {
+		panic(err)
+	}
+	if electrum {
+		if pk.uncompressed {
+			ver = 0
+		} else {
+			ver = 1
+		}
+	}
+	buf := make([]byte, 65)
+	r.Set(sig.R).FillBytes(buf[1:33])
+	s.Set(sig.S).FillBytes(buf[33:])
+	for _, header := range headers[ver] {
+		buf[0] = header
+		signature := make([]byte, base64.StdEncoding.EncodedLen(len(buf)))
+		base64.StdEncoding.Encode(signature, buf)
+		signedMessage.Address = address
+		signedMessage.Data = message
+		signedMessage.Signature = signature
+		verified, _, _, err := VerifyMessage(&signedMessage, electrum)
+		if err != nil {
+			panic(err)
+		}
+		if verified {
+			return &signedMessage, nil
+		}
+	}
+	return nil, errors.New("invalid signature parameters")
+}
+
 func main() {
 
-	key := big.NewInt(1000)
+	//key := big.NewInt(1000)
 	start := time.Now()
-	raw, _ := createRawPubKey(key)
-	pk := createPubKey(raw, false)
-	fmt.Println(createAddress(pk))
-	fmt.Println(createNestedSegwit(pk))
-	fmt.Println(hex.EncodeToString([]byte{5, 00, 20}))
-	addr, _ := createNativeSegwit(pk)
-	fmt.Println(addr)
-	fmt.Printf("uint64: %v\n", uint64(18446744073709551615))
+	// raw, _ := createRawPubKey(key)
+	// pk := createPubKey(raw, false)
+	// fmt.Println(createAddress(pk))
+	// fmt.Println(createNestedSegwit(pk))
+	// fmt.Println(hex.EncodeToString([]byte{5, 00, 20}))
+	// addr, _ := createNativeSegwit(pk)
+	// fmt.Println(addr)
+	// fmt.Printf("uint64: %v\n", uint64(18446744073709551615))
 
-	fmt.Println(hex.EncodeToString(varInt(12356333474345788523)))
-	fmt.Println(hex.EncodeToString(msgMagic("语言处理")))
-	a := secp256k1.GenPoint
-	b := identityPoint
-	fmt.Println(!a.Eq(b))
-	fmt.Printf("%p%p\n", a.X, &secp256k1.GenPoint.X)
+	// fmt.Println(hex.EncodeToString(varInt(12356333474345788523)))
+	// fmt.Println(hex.EncodeToString(msgMagic("语言处理")))
+	// a := secp256k1.GenPoint
+	// b := identityPoint
+	// fmt.Println(!a.Eq(b))
+	// fmt.Printf("%p%p\n", a.X, &secp256k1.GenPoint.X)
 
-	fmt.Println(deriveAddress(pk, "p2wpkh"))
-	fmt.Printf("%p\n", secp256k1.GenPoint.X)
-	fmt.Println(secp256k1.GenPoint)
-	fmt.Printf("%p\n", secp256k1.GenPoint.X)
-	fmt.Println(secp256k1.GenPoint)
-	var pr JacobianPoint
-	fmt.Println(pr.Mul(key, pr.Mul(key, secp256k1.GenPoint)))
-	fmt.Println(secp256k1.GenPoint)
+	// fmt.Println(deriveAddress(pk, "segwit"))
+	// fmt.Printf("%p\n", secp256k1.GenPoint.X)
+	// fmt.Println(secp256k1.GenPoint)
+	// fmt.Printf("%p\n", secp256k1.GenPoint.X)
+	// fmt.Println(secp256k1.GenPoint)
+	// var pr JacobianPoint
+	// fmt.Println(pr.Mul(key, pr.Mul(key, secp256k1.GenPoint)))
+	// fmt.Println(secp256k1.GenPoint)
+	// message := &BitcoinMessage{Address: "17PDgca9K59ed6RDtXaqje2gWUr8aLvbig",
+	// 	Data:      "ECDSA is the most fun I have ever experienced",
+	// 	Signature: []byte("IPxvWLg99SQxAXQd8/cdhR7x1kShMvF3Fw999+hNio2hEuvKH80FAO2YhiatHvt4ugdyB2Yo1NiZzcBm7ZLg5/w="),
+	// }
+	// fmt.Println(VerifyMessage(message, false))
+	//ppkk, _ := new(big.Int).SetString("f2693ef943df4b25eec8310ec3ea4bc146e084f5c524b1ea7cca390e1469c46b", 16)
+	w := "L38WQxF2njcyvgjAZ1f4n1cN7yp793VEopHaxav8er7HN5JLeriu"
+	sd, err := NewPrivateKey(nil, &w)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(sd.raw)
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ssd, err := NewPrivateKey(nil, nil)
+			if err != nil {
+				panic(err)
+			}
+			msg, err := SignMessage(ssd, "legacy", "ECDSA is the most fun I have ever experienced", false, false)
+			if err != nil {
+				panic(err)
+			}
+			_, _, _, err = VerifyMessage(msg, false)
+			if err != nil {
+				panic(err)
+			}
+			//fmt.Println(verified, pub, message)
+		}()
+
+	}
+	wg.Wait()
 	fmt.Println(time.Since(start))
-	th := big.NewInt(1000)
-	fmt.Println(sign(th, th))
-	th2 := big.NewInt(10000)
-	fmt.Println(sign(th2, th2))
-	fmt.Println(sign(th2, th2))
-
-	fmt.Println(VerifyMessage("175A5YsPUdM71mnNCC3i8faxxYJgBonjWL", "ECDSA is the most fun I have ever experienced", "HyiLDcQQ1p2bKmyqM0e5oIBQtKSZds4kJQ+VbZWpr0kYA6Qkam2MlUeTr+lm1teUGHuLapfa43JjyrRqdSA0pxs=", true))
 
 }
