@@ -52,7 +52,32 @@ var (
 		{0x27, 0x28, 0x29, 0x2a}, // 39 - 42 P2WPKH compressed (BIP-137)
 		{0x2b, 0x2c, 0x2d, 0x2e}, // TODO 43 - 46 P2TR
 	}
+	OutOfRangeError = &PrivateKeyError{Message: "scalar is out of range"}
 )
+
+type PrivateKeyError struct {
+	Message string
+	Err     error
+}
+
+func (e *PrivateKeyError) Error() string { return e.Message }
+func (e *PrivateKeyError) Unwrap() error { return e.Err }
+
+type PointError struct {
+	Message string
+	Err     error
+}
+
+func (e *PointError) Error() string { return e.Message }
+func (e *PointError) Unwrap() error { return e.Err }
+
+type SignatureError struct {
+	Message string
+	Err     error
+}
+
+func (e *SignatureError) Error() string { return e.Message }
+func (e *SignatureError) Unwrap() error { return e.Err }
 
 type JacobianPoint struct {
 	X *big.Int
@@ -303,11 +328,11 @@ type PrivateKey struct {
 // generate generates a random big.Int value within the range of secp256k1.NCurve.
 //
 // It sets the value of the receiver PrivateKey's raw field to the generated random big.Int.
-func generate() *big.Int {
+func generate() (*big.Int, error) {
 	if n, err := rand.Int(rand.Reader, secp256k1.NCurve); err != nil {
-		panic(err)
+		return nil, &PrivateKeyError{Message: "failed generating random ineteger", Err: err}
 	} else {
-		return n
+		return n, nil
 	}
 }
 
@@ -332,14 +357,20 @@ func generate() *big.Int {
 //
 // The function returns a pointer to the newly created PrivateKey object.
 func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
-	var pk PrivateKey
+	var (
+		pk  PrivateKey
+		err error
+	)
 	if raw != nil && wif != nil {
-		return nil, errors.New("cannot specify both raw and wif")
+		return nil, &PrivateKeyError{Message: "cannot specify both raw and wif"}
 	}
 	if raw == nil && wif == nil {
-		pk.raw = generate()
+		pk.raw, err = generate()
+		if err != nil {
+			return nil, err
+		}
 		if !ValidKey(pk.raw) {
-			return nil, errors.New("scalar is invalid")
+			return nil, OutOfRangeError
 		}
 		pk.uncompressed = false
 		encoded, err := pk.Wif(pk.uncompressed)
@@ -350,7 +381,7 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 	} else if wif == nil {
 		pk.raw = new(big.Int).Set(raw)
 		if !ValidKey(pk.raw) {
-			return nil, errors.New("scalar is invalid")
+			return nil, OutOfRangeError
 		}
 		pk.uncompressed = false
 		encoded, err := pk.Wif(pk.uncompressed)
@@ -373,13 +404,13 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 //
 // It takes no parameters.
 // It returns three byte slices: the version byte, the private key bytes, and the checksum bytes.
-func (k *PrivateKey) SplitBytes() (version []byte, payload []byte, checkSum []byte) {
+func (k *PrivateKey) SplitBytes() (version []byte, payload []byte, checkSum []byte, err error) {
 	privkey, err := base58.Decode(*k.wif)
 	if err != nil {
-		panic(err)
+		return nil, nil, nil, err
 	}
 	pkLen := len(privkey)
-	return privkey[:1], privkey[1 : pkLen-4], privkey[pkLen-4:]
+	return privkey[:1], privkey[1 : pkLen-4], privkey[pkLen-4:], nil
 }
 
 // Int calculates the integer value of the private key.
@@ -390,11 +421,14 @@ func (k *PrivateKey) Int() (uncompressed bool, err error) {
 		privKeyInt big.Int
 	)
 	if k.wif == nil {
-		return false, errors.New("invalid wif")
+		return false, &PrivateKeyError{Message: "wif cannot be empty"}
 	}
-	version, priVkey, checkSum := k.SplitBytes()
+	version, priVkey, checkSum, err := k.SplitBytes()
+	if err != nil {
+		return false, &PrivateKeyError{Message: "failed decoding wif string", Err: err}
+	}
 	if !validCheckSum(version, priVkey, checkSum) {
-		return false, errors.New("invalid wif checksum")
+		return false, &PrivateKeyError{Message: "invalid wif checksum"}
 	}
 	if len(priVkey) == 33 {
 		privKeyInt.SetBytes(priVkey[:len(priVkey)-1])
@@ -404,7 +438,7 @@ func (k *PrivateKey) Int() (uncompressed bool, err error) {
 		uncompressed = true
 	}
 	if !ValidKey(&privKeyInt) {
-		return false, errors.New("invalid scalar")
+		return false, OutOfRangeError
 	}
 	k.raw = &privKeyInt
 	return uncompressed, nil
@@ -416,7 +450,7 @@ func (k *PrivateKey) Int() (uncompressed bool, err error) {
 // It returns a pointer to a string and an error.
 func (k *PrivateKey) Wif(uncompressed bool) (*string, error) {
 	if !ValidKey(k.raw) {
-		return nil, nil
+		return nil, OutOfRangeError
 	}
 	buf := make([]byte, 32)
 	pk := joinBytes([][]byte{{0x80}, k.raw.FillBytes(buf), {0x01}}...)
@@ -527,7 +561,7 @@ func createRawPubKey(privKey *big.Int) (*Point, error) {
 	var p JacobianPoint
 	rawPubKey := p.Mul(privKey, nil).ToAffine()
 	if !rawPubKey.Valid() {
-		return nil, errors.New("point is not on curve")
+		return nil, &PointError{Message: "point is not on curve"}
 	}
 	return rawPubKey, nil
 }
@@ -607,15 +641,19 @@ func createNestedSegwit(pubKey []byte) string {
 //
 // Returns:
 //   - a string representing the native SegWit Bitcoin address.
-func createNativeSegwit(pubKey []byte) (string, error) {
+func createNativeSegwit(pubKey []byte) string {
 	converted, err := bech32.ConvertBits(Ripemd160SHA256(pubKey), 8, 5, true)
 	if err != nil {
-		return "", err
+		panic(err)
 	}
 	combined := make([]byte, len(converted)+1)
 	combined[0] = byte(0)
 	copy(combined[1:], converted)
-	return bech32.Encode("bc", combined)
+	addr, err := bech32.Encode("bc", combined)
+	if err != nil {
+		panic(err)
+	}
+	return addr
 }
 
 // varInt generates a variable-length integer in bytes based on the input length.
@@ -710,10 +748,14 @@ func signed(msg, privKey, k *big.Int) *Signature {
 func sign(privKey, msg *big.Int) *Signature {
 	var (
 		k   *big.Int
+		err error
 		sig *Signature
 	)
 	for {
-		k = generate()
+		k, err = generate()
+		if err != nil {
+			panic(err)
+		}
 		sig = signed(msg, privKey, k)
 		if sig != nil {
 			return sig
@@ -869,7 +911,7 @@ func deriveAddress(pubKey []byte, addrType string) (addr string, ver int, err er
 	prefix := pubKey[0]
 	if prefix == 0x04 {
 		if addrType != "legacy" {
-			return "", 0, errors.New("empty")
+			return "", 0, &SignatureError{Message: "invalid address type"}
 		}
 		return createAddress(pubKey), 0, nil
 	}
@@ -880,13 +922,9 @@ func deriveAddress(pubKey []byte, addrType string) (addr string, ver int, err er
 		return createNestedSegwit(pubKey), 2, nil
 	}
 	if addrType == "segwit" {
-		if addr, err := createNativeSegwit(pubKey); err != nil {
-			return "", 0, err
-		} else {
-			return addr, 3, nil
-		}
+		return createNativeSegwit(pubKey), 3, nil
 	}
-	return "", 0, errors.New("invalid address type")
+	return "", 0, &SignatureError{Message: "invalid address type"}
 
 }
 
@@ -924,22 +962,21 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubke
 	dSig := make([]byte, base64.StdEncoding.DecodedLen(len(message.Signature)))
 	n, err := base64.StdEncoding.Decode(dSig, message.Signature)
 	if err != nil {
-		fmt.Println("decode error:", err)
-		return false, "", "", err
+		return false, "", "", &SignatureError{Message: "decode error", Err: err}
 	}
 	if n != 65 {
-		return false, "", "", errors.New("signature must be 65 bytes long")
+		return false, "", "", &SignatureError{Message: "signature must be 65 bytes long"}
 	}
 
 	header, r, s := splitSignature(dSig[:n])
 	if header < 27 || header > 46 {
-		return false, "", "", errors.New("header byte out of range")
+		return false, "", "", &SignatureError{Message: "header byte out of range"}
 	}
 	if r.Cmp(secp256k1.NCurve) >= 0 || r.Cmp(zero) == 0 {
-		return false, "", "", errors.New("r-value out of range")
+		return false, "", "", &SignatureError{Message: "r-value out of range"}
 	}
 	if s.Cmp(secp256k1.NCurve) >= 0 || s.Cmp(zero) == 0 {
-		return false, "", "", errors.New("s-value out of range")
+		return false, "", "", &SignatureError{Message: "s-value out of range"}
 	}
 	uncompressed := false
 	addrType := "legacy"
@@ -978,7 +1015,7 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubke
 		for _, addrType := range addressTypes {
 			addr, _, err := deriveAddress(pubKey, addrType)
 			if err != nil {
-				panic(err)
+				return false, "", "", err
 			}
 			if addr == message.Address {
 				return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", message.Address), nil
@@ -987,7 +1024,7 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubke
 		return false, hex.EncodeToString(pubKey), fmt.Sprintln("message failed to verify"), nil
 	}
 	if addrType == "" {
-		return false, "", "", errors.New("unknown address type")
+		return false, "", "", &SignatureError{Message: "unknown address type"}
 	}
 	addr, _, err := deriveAddress(pubKey, addrType)
 	if err != nil {
@@ -1026,7 +1063,7 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 	msg.SetBytes(DoubleSHA256(mBytes))
 	rawPubKey, err := createRawPubKey(pk.raw)
 	if err != nil {
-		panic("error")
+		return nil, err
 	}
 	pubKey := createPubKey(rawPubKey, pk.uncompressed)
 	if !deterministic {
@@ -1036,7 +1073,7 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 	}
 	address, ver, err := deriveAddress(pubKey, addrType)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	if electrum {
 		if pk.uncompressed {
@@ -1057,13 +1094,13 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 		signedMessage.Signature = signature
 		verified, _, _, err := VerifyMessage(&signedMessage, electrum)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		if verified {
 			return &signedMessage, nil
 		}
 	}
-	return nil, errors.New("invalid signature parameters")
+	return nil, &SignatureError{Message: "invalid signature parameters"}
 }
 
 func main() {
@@ -1107,11 +1144,11 @@ func main() {
 	}
 	fmt.Println(sd.raw)
 	var wg sync.WaitGroup
-	for range 1 {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ssd, err := NewPrivateKey(nil, &w)
+			ssd, err := NewPrivateKey(nil, nil)
 			if err != nil {
 				panic(err)
 			}
@@ -1131,7 +1168,6 @@ func main() {
 
 	}
 	wg.Wait()
-	fmt.Println(time.Since(start))
 	fmt.Println(bitsToInt([]byte("Hello jshakdhasjkdhaskjdhkasjhdkjashdjkashdjks"), 1123))
 	fmt.Println(hex.EncodeToString(intToOct(big.NewInt(65533), 3)))
 	fmt.Println(hex.EncodeToString(bitsToOct([]byte("Hello jshakdhasjkdhaskjdhkasjhdkjashdjkashdjks"), big.NewInt(6533), 36, 12)))
@@ -1139,5 +1175,11 @@ func main() {
 	var d big.Int
 	fmt.Println(d.Add(two, three).Rsh(&d, 2))
 	fmt.Println(rfcSign(big.NewInt(6553365533564754), big.NewInt(65533)))
+	_, err = NewPrivateKey(big.NewInt(1000), &w)
+	fmt.Println(errors.Unwrap(err))
+
+	_, _, _, err = VerifyMessage(&BitcoinMessage{Address: "ss", Data: "dddf", Signature: []byte("Gdggdgd")}, false)
+	//var dddd *SignatureError
+	fmt.Println(time.Since(start))
 
 }
