@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -9,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"math/big"
 	"sync"
 	"time"
@@ -371,7 +373,7 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 //
 // It takes no parameters.
 // It returns three byte slices: the version byte, the private key bytes, and the checksum bytes.
-func (k *PrivateKey) SplitBytes() ([]byte, []byte, []byte) {
+func (k *PrivateKey) SplitBytes() (version []byte, payload []byte, checkSum []byte) {
 	privkey, err := base58.Decode(*k.wif)
 	if err != nil {
 		panic(err)
@@ -383,10 +385,9 @@ func (k *PrivateKey) SplitBytes() ([]byte, []byte, []byte) {
 // Int calculates the integer value of the private key.
 //
 // It returns a boolean indicating if the key is uncompressed and an error if any.
-func (k *PrivateKey) Int() (bool, error) {
+func (k *PrivateKey) Int() (uncompressed bool, err error) {
 	var (
-		privKeyInt   big.Int
-		uncompressed bool
+		privKeyInt big.Int
 	)
 	if k.wif == nil {
 		return false, errors.New("invalid wif")
@@ -720,6 +721,140 @@ func sign(privKey, msg *big.Int) *Signature {
 	}
 }
 
+// bitsToInt converts a byte slice to a big.Int and adjusts its length to match qLen.
+//
+// Parameters:
+//   - b: a byte slice to be converted to a big.Int.
+//   - qLen: an integer representing the desired length.
+//
+// Returns:
+//   - *big.Int: the converted big.Int value.
+//
+// https://www.rfc-editor.org/rfc/rfc6979 section 2.3.2.
+func bitsToInt(b []byte, qLen int) *big.Int {
+	bLen := len(b) << 3
+	bInt := new(big.Int).SetBytes(b)
+	if bLen > qLen {
+		bInt.Rsh(bInt, uint(bLen-qLen))
+	}
+	return bInt
+}
+
+// intToOct converts a big.Int to a byte slice of a specified length.
+//
+// Parameters:
+//   - x: The big.Int to convert.
+//   - roLen: The desired length of the resulting byte slice.
+//
+// Returns:
+//   - []byte: The byte slice representation of the big.Int.
+//
+// https://www.rfc-editor.org/rfc/rfc6979 section 2.3.3.
+func intToOct(x *big.Int, roLen int) []byte {
+	xoLen := x.BitLen() >> 3
+	if xoLen < roLen {
+		buf := make([]byte, roLen)
+		return x.FillBytes(buf)
+	}
+	if xoLen > roLen {
+		buf := make([]byte, xoLen)
+		x.FillBytes(buf)
+		return buf[xoLen-roLen:]
+	}
+	return x.Bytes()
+}
+
+// bitsToOct converts a byte slice of bits to an octet slice
+//
+// Parameters:
+//   - b: a byte slice representing the bits to be converted
+//   - q: a big.Int representing the modulus
+//   - qLen: an integer representing the length of the modulus in bits
+//   - roLen: an integer representing the desired length of the octet slice in octets
+//
+// Returns:
+//   - a byte slice representing the converted octets
+//
+// https://www.rfc-editor.org/rfc/rfc6979 section 2.3.4.
+func bitsToOct(b []byte, q *big.Int, qLen int, roLen int) []byte {
+	var z1, z2 big.Int
+	z1.Set(bitsToInt(b, qLen))
+	z2.Sub(&z1, q)
+	if z2.Cmp(zero) == -1 {
+		z2 = z1
+	}
+	return intToOct(&z2, roLen)
+}
+
+// rfcSign generates a signature for a given message using the RFC6979 algorithm.
+//
+// Parameters:
+//   - x: a pointer to a big.Int representing the private key.
+//   - msg: a pointer to a big.Int representing the message.
+//
+// Returns:
+//   - *Signature: a pointer to a Signature struct containing the calculated signature.
+func rfcSign(x, msg *big.Int) *Signature {
+	var (
+		q      big.Int
+		k      *big.Int
+		K_, V_ hash.Hash
+		K, V   []byte
+		sig    *Signature
+	)
+	// https://www.rfc-editor.org/rfc/rfc6979 section 3.2.
+	q.Set(secp256k1.NCurve)
+	qLen := q.BitLen()
+	qoLen := qLen >> 3
+	roLen := (qLen + 7) >> 3
+	// step a is omitted since we already have a hash of a message
+	h1 := msg.FillBytes(make([]byte, 32))
+	// step b
+	V = bytes.Repeat([]byte{0x01}, 32)
+	// step c
+	K = bytes.Repeat([]byte{0x00}, 32)
+	// step d
+	mSuffix := joinBytes([][]byte{intToOct(x, roLen), bitsToOct(h1, &q, qLen, roLen)}...)
+	m1 := joinBytes([][]byte{{0x00}, mSuffix}...)
+	m2 := joinBytes([][]byte{{0x01}, mSuffix}...)
+	K_ = hmac.New(sha256.New, K)
+	K_.Write(joinBytes([][]byte{V, m1}...))
+	K = K_.Sum(nil)
+	// step e
+	V_ = hmac.New(sha256.New, K)
+	V_.Write(V)
+	V = V_.Sum(nil)
+	// step f
+	K_ = hmac.New(sha256.New, K)
+	K_.Write(joinBytes([][]byte{V, m2}...))
+	K = K_.Sum(nil)
+	// step g
+	V_ = hmac.New(sha256.New, K)
+	V_.Write(V)
+	V = V_.Sum(nil)
+	// step h
+	for {
+		var T []byte
+		for len(T) < qoLen {
+			V_ = hmac.New(sha256.New, K)
+			V_.Write(V)
+			V = V_.Sum(nil)
+			T = joinBytes([][]byte{T, V}...)
+		}
+		k = bitsToInt(T, qLen)
+		if sig = signed(msg, x, k); sig != nil {
+			return sig
+		}
+		// if k was invalid (sig == nil), continue with algorithm
+		K_ = hmac.New(sha256.New, K)
+		K_.Write(joinBytes([][]byte{V, {0x00}}...))
+		K = K_.Sum(nil)
+		V_ = hmac.New(sha256.New, K)
+		V_.Write(V)
+		V = V_.Sum(nil)
+	}
+}
+
 // deriveAddress generates a Bitcoin address based on the provided public key and address type.
 //
 // Parameters:
@@ -730,7 +865,7 @@ func sign(privKey, msg *big.Int) *Signature {
 //   - a string representing the Bitcoin address.
 //   - an integer representing the address type. 0 for legacy, 1 for nested, and 2 for segwit.
 //   - an error if the address type is invalid.
-func deriveAddress(pubKey []byte, addrType string) (string, int, error) {
+func deriveAddress(pubKey []byte, addrType string) (addr string, ver int, err error) {
 	prefix := pubKey[0]
 	if prefix == 0x04 {
 		if addrType != "legacy" {
@@ -781,7 +916,7 @@ func splitSignature(sig []byte) (header byte, r, s *big.Int) {
 //   - string: the hex-encoded public key.
 //   - string: a message indicating whether the message was verified or not.
 //   - error: an error if any occurred during the verification process.
-func VerifyMessage(message *BitcoinMessage, electrum bool) (bool, string, string, error) {
+func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubkey string, result string, err error) {
 	var (
 		x, y, alpha, beta, bt, z, e big.Int
 		p, q, Q, pk                 JacobianPoint
@@ -897,7 +1032,7 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 	if !deterministic {
 		sig = sign(pk.raw, &msg)
 	} else {
-		panic("not implemented")
+		sig = rfcSign(pk.raw, &msg)
 	}
 	address, ver, err := deriveAddress(pubKey, addrType)
 	if err != nil {
@@ -972,27 +1107,37 @@ func main() {
 	}
 	fmt.Println(sd.raw)
 	var wg sync.WaitGroup
-	for range 100 {
+	for range 1 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ssd, err := NewPrivateKey(nil, nil)
+			ssd, err := NewPrivateKey(nil, &w)
 			if err != nil {
 				panic(err)
 			}
-			msg, err := SignMessage(ssd, "legacy", "ECDSA is the most fun I have ever experienced", false, false)
+			msg, err := SignMessage(ssd, "legacy", "ECDSA is the most fun I have ever experienced", true, false)
 			if err != nil {
 				panic(err)
 			}
+			fmt.Println(string(msg.Signature))
+
 			_, _, _, err = VerifyMessage(msg, false)
 			if err != nil {
 				panic(err)
 			}
+
 			//fmt.Println(verified, pub, message)
 		}()
 
 	}
 	wg.Wait()
 	fmt.Println(time.Since(start))
+	fmt.Println(bitsToInt([]byte("Hello jshakdhasjkdhaskjdhkasjhdkjashdjkashdjks"), 1123))
+	fmt.Println(hex.EncodeToString(intToOct(big.NewInt(65533), 3)))
+	fmt.Println(hex.EncodeToString(bitsToOct([]byte("Hello jshakdhasjkdhaskjdhkasjhdkjashdjkashdjks"), big.NewInt(6533), 36, 12)))
+	fmt.Println(2 + 3>>2)
+	var d big.Int
+	fmt.Println(d.Add(two, three).Rsh(&d, 2))
+	fmt.Println(rfcSign(big.NewInt(6553365533564754), big.NewInt(65533)))
 
 }
