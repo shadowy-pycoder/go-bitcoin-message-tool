@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
@@ -96,7 +97,7 @@ ECDSA is the most fun I have ever experienced
 H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
 -----END BITCOIN SIGNATURE-----
 `
-	verifyUsagePrefix = `Usage bmt verify [-h] -a ADDRESS -m [MESSAGE ...] -s SIGNATURE [-e] [-v] [-r]
+	verifyUsagePrefix = `Usage bmt verify [-h] [-f | -a ADDRESS -m [MESSAGE ...] -s SIGNATURE] [-e] [-v] [-r]
 Options:
 `
 	verifyUsageExamples = `
@@ -119,7 +120,25 @@ bmt verify -a 175A5YsPUdM71mnNCC3i8faxxYJgBonjWL \
 -r
 true
 024aeaf55040fa16de37303d13ca1dde85f4ca9baa36e2963a27a1c0c1165fe2b1
+
+Verify message in RFC2440-like format
+
+bmt verify -f -v -r   
+Insert message in RFC2440-like format (or Ctrl+C to quit):
+-----BEGIN BITCOIN SIGNED MESSAGE-----
+ECDSA is the most fun I have ever experienced
+-----BEGIN BITCOIN SIGNATURE-----
+16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
+
+H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
+-----END BITCOIN SIGNATURE-----
+true
+message verified to be from 16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
+02700317e20cefbcd8a9e2f294ff2585bc0b8dc981bfe68f72c42497d1b5239988
 `
+	beginSignedMessage = "-----BEGIN BITCOIN SIGNED MESSAGE-----"
+	beginSignature     = "-----BEGIN BITCOIN SIGNATURE-----"
+	endSignature       = "-----END BITCOIN SIGNATURE-----"
 )
 
 type PrivateKeyError struct {
@@ -1174,13 +1193,41 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 }
 
 func printMessage(bm *BitcoinMessage) {
-	fmt.Println("-----BEGIN BITCOIN SIGNED MESSAGE-----")
+	fmt.Println(beginSignedMessage)
 	fmt.Println(bm.Data)
-	fmt.Println("-----BEGIN BITCOIN SIGNATURE-----")
+	fmt.Println(beginSignature)
 	fmt.Println(bm.Address)
 	fmt.Println()
 	fmt.Println(string(bm.Signature))
-	fmt.Println("-----END BITCOIN SIGNATURE-----")
+	fmt.Println(endSignature)
+}
+
+func trimCRLF(s string) string {
+	msg := strings.TrimPrefix(s, "\r")
+	msg = strings.TrimPrefix(msg, "\n")
+	msg = strings.TrimSuffix(msg, "\r")
+	msg = strings.TrimSuffix(msg, "\n")
+	return msg
+}
+
+func parseRFCMessage(m string) *BitcoinMessage {
+	ind1 := strings.Index(m, beginSignedMessage)
+	ind2 := strings.Index(m, beginSignature)
+	ind3 := strings.Index(m, endSignature)
+	if ind1 == -1 || ind2 == -1 || ind3 == -1 {
+		return nil
+	}
+	if ind2 < ind1 || ind3 < ind2 {
+		return nil
+	}
+	partOne := m[ind1+len(beginSignedMessage) : ind2]
+	partTwo := m[ind2+len(beginSignature) : ind3]
+	message := trimCRLF(partOne)
+	signature := strings.Split(trimCRLF(partTwo), "\n")
+	return &BitcoinMessage{
+		Address:   signature[0],
+		Data:      message,
+		Signature: []byte(signature[len(signature)-1])}
 }
 
 func NewSignCommand() *SignCommand {
@@ -1270,6 +1317,7 @@ func NewVerifyCommand() *VerifyCommand {
 		fs: flag.NewFlagSet("verify", flag.ContinueOnError),
 	}
 	vc.message = &BitcoinMessage{}
+	vc.full = false
 	vc.fs.BoolVar(&vc.help, "h", false, "show this help message and exit")
 	vc.fs.BoolVar(&vc.electrum, "e", false, "verify electrum-like signature")
 	vc.fs.BoolVar(&vc.recpub, "r", false, "recover public key")
@@ -1278,6 +1326,26 @@ func NewVerifyCommand() *VerifyCommand {
 	vc.fs.StringVar(&vc.message.Data, "m", "", "[MESSAGE ...] message to verify")
 	vc.fs.Func("s", "SIGNATURE bitcoin signature in base64 format", func(flagValue string) error {
 		vc.message.Signature = []byte(flagValue)
+		return nil
+	})
+	vc.fs.BoolFunc("f", "verify message in RFC2440-like format", func(flagValue string) error {
+		reader := bufio.NewScanner(os.Stdin)
+		var lines []string
+		fmt.Println("Insert message in RFC2440-like format (or Ctrl+C to quit):")
+		for reader.Scan() {
+			line := reader.Text()
+			lines = append(lines, line)
+			if strings.HasPrefix(line, endSignature) {
+				break
+			}
+		}
+		message := parseRFCMessage(strings.Join(lines, "\n"))
+		if message == nil {
+			fmt.Fprintln(os.Stderr, "bmt: failed parsing message")
+			os.Exit(2)
+		}
+		vc.message = message
+		vc.full = true
 		return nil
 	})
 	return vc
@@ -1290,6 +1358,7 @@ type VerifyCommand struct {
 	electrum bool
 	recpub   bool
 	verbose  bool
+	full     bool
 	message  *BitcoinMessage
 }
 
@@ -1311,12 +1380,14 @@ func (vc *VerifyCommand) Run() error {
 		vc.fs.Usage()
 		os.Exit(0)
 	}
-	required := []string{"s", "a", "m"}
-	seen := make(map[string]bool)
-	vc.fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
-	for _, req := range required {
-		if !seen[req] {
-			return fmt.Errorf("bmt: missing required -%s flag. See 'bmt verify -h'", req)
+	if !vc.full {
+		required := []string{"s", "a", "m"}
+		seen := make(map[string]bool)
+		vc.fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+		for _, req := range required {
+			if !seen[req] {
+				return fmt.Errorf("bmt: missing required -%s flag. See 'bmt verify -h'", req)
+			}
 		}
 	}
 	verified, pubkey, result, err := VerifyMessage(vc.message, vc.electrum)
@@ -1368,7 +1439,6 @@ func root(args []string) error {
 }
 
 func main() {
-
 	if err := root(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
