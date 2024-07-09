@@ -8,16 +8,19 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
+	"flag"
 	"fmt"
 	"hash"
 	"math/big"
-	"sync"
-	"time"
+	"os"
+	"slices"
+	"strings"
+	"syscall"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/golangcrypto/ripemd160"
 	"github.com/mr-tron/base58"
+	"golang.org/x/term"
 )
 
 var (
@@ -44,7 +47,7 @@ var (
 		GenPoint: NewJacobianPoint(genPointX, genPointY, one),
 	}
 	identityPoint = NewJacobianPoint(pCurve, zero, one)
-	addressTypes  = [3]string{"legacy", "nested", "segwit"}
+	addressTypes  = []string{"legacy", "nested", "segwit"}
 	headers       = [5][4]byte{
 		{0x1b, 0x1c, 0x1d, 0x1e}, // 27 - 30 P2PKH uncompressed
 		{0x1f, 0x20, 0x21, 0x22}, // 31 - 34 P2PKH compressed
@@ -53,6 +56,70 @@ var (
 		{0x2b, 0x2c, 0x2d, 0x2e}, // TODO 43 - 46 P2TR
 	}
 	OutOfRangeError = &PrivateKeyError{Message: "scalar is out of range"}
+	flags           = flag.NewFlagSet("bitcoin message tool", flag.ExitOnError)
+	usagePrefix     = `
+██████╗ ███╗   ███╗████████╗
+██╔══██╗████╗ ████║╚══██╔══╝
+██████╔╝██╔████╔██║   ██║   
+██╔══██╗██║╚██╔╝██║   ██║   
+██████╔╝██║ ╚═╝ ██║   ██║   
+╚═════╝ ╚═╝     ╚═╝   ╚═╝ 
+
+Bitcoin Message Tool by shadowy-pycoder 
+
+GitHub: https://github.com/shadowy-pycoder
+
+Usage: bmt [OPTIONS] COMMAND
+Options:
+`
+	usageCommands = `
+Commands:
+
+  sign         Create bitcoin message 
+  verify       Verify bitcoin message 
+`
+	signUsagePrefix = `Usage bmt sign [-h] -p -a {legacy, nested, segwit} -m [MESSAGE ...] [-d] [-e]
+Options:
+`
+	signUsageExamples = `
+Examples:
+
+Deterministic signature for compressed private key and legacy address
+
+bmt sign -p -a legacy -d -m "ECDSA is the most fun I have ever experienced"
+PrivateKey (WIF): L3V9AFB763LKWWsMh8CyosSG8QV8KDTjYeXqkt4WX5Xyz2aNqLAY
+-----BEGIN BITCOIN SIGNED MESSAGE-----
+ECDSA is the most fun I have ever experienced
+-----BEGIN BITCOIN SIGNATURE-----
+16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
+
+H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
+-----END BITCOIN SIGNATURE-----
+`
+	verifyUsagePrefix = `Usage bmt verify [-h] -a ADDRESS -m [MESSAGE ...] -s SIGNATURE [-e] [-v] [-r]
+Options:
+`
+	verifyUsageExamples = `
+Examples:
+
+Message verification in verbose mode
+
+bmt verify -a 175A5YsPUdM71mnNCC3i8faxxYJgBonjWL \
+-m "ECDSA is the most fun I have ever experienced" \
+-s HyiLDcQQ1p2bKmyqM0e5oIBQtKSZds4kJQ+VbZWpr0kYA6Qkam2MlUeTr+lm1teUGHuLapfa43JjyrRqdSA0pxs= \
+-v
+true
+message verified to be from 175A5YsPUdM71mnNCC3i8faxxYJgBonjWL
+
+Display a recovered public key
+
+bmt verify -a 175A5YsPUdM71mnNCC3i8faxxYJgBonjWL \
+-m "ECDSA is the most fun I have ever experienced" \
+-s HyiLDcQQ1p2bKmyqM0e5oIBQtKSZds4kJQ+VbZWpr0kYA6Qkam2MlUeTr+lm1teUGHuLapfa43JjyrRqdSA0pxs= \
+-r
+true
+024aeaf55040fa16de37303d13ca1dde85f4ca9baa36e2963a27a1c0c1165fe2b1
+`
 )
 
 type PrivateKeyError struct {
@@ -410,6 +477,9 @@ func (k *PrivateKey) SplitBytes() (version []byte, payload []byte, checkSum []by
 		return nil, nil, nil, err
 	}
 	pkLen := len(privkey)
+	if pkLen-4 < 1 {
+		return nil, nil, nil, &PrivateKeyError{Message: "too short"}
+	}
 	return privkey[:1], privkey[1 : pkLen-4], privkey[pkLen-4:], nil
 }
 
@@ -1103,83 +1173,204 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 	return nil, &SignatureError{Message: "invalid signature parameters"}
 }
 
+func printMessage(bm *BitcoinMessage) {
+	fmt.Println("-----BEGIN BITCOIN SIGNED MESSAGE-----")
+	fmt.Println(bm.Data)
+	fmt.Println("-----BEGIN BITCOIN SIGNATURE-----")
+	fmt.Println(bm.Address)
+	fmt.Println()
+	fmt.Println(string(bm.Signature))
+	fmt.Println("-----END BITCOIN SIGNATURE-----")
+}
+
+func NewSignCommand() *SignCommand {
+	sc := &SignCommand{
+		fs: flag.NewFlagSet("sign", flag.ContinueOnError),
+	}
+	sc.fs.BoolVar(&sc.help, "h", false, "show this help message and exit")
+	sc.fs.BoolVar(&sc.deterministic, "d", false, "sign deterministically (RFC6979)")
+	sc.fs.BoolVar(&sc.electrum, "e", false, "create electrum-like signature")
+	sc.fs.StringVar(&sc.message, "m", "", "[MESSAGE ...] message to sign")
+	sc.fs.BoolFunc("p", "private key in wallet import format (WIF)", func(flagValue string) error {
+		fmt.Print("PrivateKey (WIF): ")
+
+		bytepw, err := term.ReadPassword(syscall.Stdin)
+		if err != nil {
+			os.Exit(1)
+		}
+		pk := string(bytepw)
+		sc.pk = pk
+		fmt.Println()
+		return nil
+	})
+	sc.fs.Func("a", "type of bitcoin address (legacy, nested, segwit)", func(flagValue string) error {
+		flagValue = strings.ToLower(flagValue)
+		if !slices.Contains(addressTypes, flagValue) {
+			fmt.Fprintf(os.Stderr, "bmt: invalid argument '%s' for -a flag. See 'bmt sign -h'\n", flagValue)
+			os.Exit(2)
+		}
+		sc.addrType = flagValue
+		return nil
+	})
+
+	return sc
+}
+
+type SignCommand struct {
+	fs *flag.FlagSet
+
+	help          bool
+	pk            string
+	addrType      string
+	deterministic bool
+	electrum      bool
+	message       string
+}
+
+func (sc *SignCommand) Name() string {
+	return sc.fs.Name()
+}
+
+func (sc *SignCommand) Init(args []string) error {
+	sc.fs.Usage = func() {
+		fmt.Println(signUsagePrefix)
+		sc.fs.PrintDefaults()
+		fmt.Println(signUsageExamples)
+	}
+	return sc.fs.Parse(args)
+}
+
+func (sc *SignCommand) Run() error {
+	if sc.help {
+		sc.fs.Usage()
+		os.Exit(0)
+	}
+	required := []string{"p", "a", "m"}
+	seen := make(map[string]bool)
+	sc.fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	for _, req := range required {
+		if !seen[req] {
+			return fmt.Errorf("bmt: missing required -%s flag. See 'bmt sign -h'", req)
+		}
+	}
+	pk, err := NewPrivateKey(nil, &sc.pk)
+	if err != nil {
+		return fmt.Errorf("bmt: invalid private key: %w", err)
+	}
+	bm, err := SignMessage(pk, sc.addrType, sc.message, sc.deterministic, sc.electrum)
+	if err != nil {
+		return fmt.Errorf("bmt: failed signing message: %w", err)
+	}
+	printMessage(bm)
+	return nil
+}
+
+func NewVerifyCommand() *VerifyCommand {
+	vc := &VerifyCommand{
+		fs: flag.NewFlagSet("verify", flag.ContinueOnError),
+	}
+	vc.message = &BitcoinMessage{}
+	vc.fs.BoolVar(&vc.help, "h", false, "show this help message and exit")
+	vc.fs.BoolVar(&vc.electrum, "e", false, "verify electrum-like signature")
+	vc.fs.BoolVar(&vc.recpub, "r", false, "recover public key")
+	vc.fs.BoolVar(&vc.verbose, "v", false, "show full message")
+	vc.fs.StringVar(&vc.message.Address, "a", "", "ADDRESS bitcoin address")
+	vc.fs.StringVar(&vc.message.Data, "m", "", "[MESSAGE ...] message to verify")
+	vc.fs.Func("s", "SIGNATURE bitcoin signature in base64 format", func(flagValue string) error {
+		vc.message.Signature = []byte(flagValue)
+		return nil
+	})
+	return vc
+}
+
+type VerifyCommand struct {
+	fs *flag.FlagSet
+
+	help     bool
+	electrum bool
+	recpub   bool
+	verbose  bool
+	message  *BitcoinMessage
+}
+
+func (vc *VerifyCommand) Name() string {
+	return vc.fs.Name()
+}
+
+func (vc *VerifyCommand) Init(args []string) error {
+	vc.fs.Usage = func() {
+		fmt.Println(verifyUsagePrefix)
+		vc.fs.PrintDefaults()
+		fmt.Println(verifyUsageExamples)
+	}
+	return vc.fs.Parse(args)
+}
+
+func (vc *VerifyCommand) Run() error {
+	if vc.help {
+		vc.fs.Usage()
+		os.Exit(0)
+	}
+	required := []string{"s", "a", "m"}
+	seen := make(map[string]bool)
+	vc.fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	for _, req := range required {
+		if !seen[req] {
+			return fmt.Errorf("bmt: missing required -%s flag. See 'bmt verify -h'", req)
+		}
+	}
+	verified, pubkey, result, err := VerifyMessage(vc.message, vc.electrum)
+	if err != nil {
+		return fmt.Errorf("bmt: failed verifying message: %w", err)
+	}
+	fmt.Println(verified)
+	if vc.verbose {
+		fmt.Println(result)
+	}
+	if vc.recpub {
+		fmt.Println(pubkey)
+	}
+	return nil
+}
+
+type Runner interface {
+	Init([]string) error
+	Run() error
+	Name() string
+}
+
+func root(args []string) error {
+	flags.Usage = func() {
+		fmt.Println(usagePrefix)
+		flags.PrintDefaults()
+		fmt.Println(usageCommands)
+	}
+	flags.Bool("h", false, "show this help message and exit")
+
+	if len(args) < 1 || slices.Contains([]string{"-h", "--h"}, args[0]) {
+		flags.Usage()
+		os.Exit(0)
+	}
+	cmds := []Runner{
+		NewSignCommand(),
+		NewVerifyCommand(),
+	}
+
+	subcommand := args[0]
+
+	for _, cmd := range cmds {
+		if cmd.Name() == subcommand {
+			cmd.Init(os.Args[2:])
+			return cmd.Run()
+		}
+	}
+	return fmt.Errorf("bmt: '%s' is not a bmt command. See 'bmt -h'", subcommand)
+}
+
 func main() {
 
-	//key := big.NewInt(1000)
-	start := time.Now()
-	// raw, _ := createRawPubKey(key)
-	// pk := createPubKey(raw, false)
-	// fmt.Println(createAddress(pk))
-	// fmt.Println(createNestedSegwit(pk))
-	// fmt.Println(hex.EncodeToString([]byte{5, 00, 20}))
-	// addr, _ := createNativeSegwit(pk)
-	// fmt.Println(addr)
-	// fmt.Printf("uint64: %v\n", uint64(18446744073709551615))
-
-	// fmt.Println(hex.EncodeToString(varInt(12356333474345788523)))
-	// fmt.Println(hex.EncodeToString(msgMagic("语言处理")))
-	// a := secp256k1.GenPoint
-	// b := identityPoint
-	// fmt.Println(!a.Eq(b))
-	// fmt.Printf("%p%p\n", a.X, &secp256k1.GenPoint.X)
-
-	// fmt.Println(deriveAddress(pk, "segwit"))
-	// fmt.Printf("%p\n", secp256k1.GenPoint.X)
-	// fmt.Println(secp256k1.GenPoint)
-	// fmt.Printf("%p\n", secp256k1.GenPoint.X)
-	// fmt.Println(secp256k1.GenPoint)
-	// var pr JacobianPoint
-	// fmt.Println(pr.Mul(key, pr.Mul(key, secp256k1.GenPoint)))
-	// fmt.Println(secp256k1.GenPoint)
-	// message := &BitcoinMessage{Address: "17PDgca9K59ed6RDtXaqje2gWUr8aLvbig",
-	// 	Data:      "ECDSA is the most fun I have ever experienced",
-	// 	Signature: []byte("IPxvWLg99SQxAXQd8/cdhR7x1kShMvF3Fw999+hNio2hEuvKH80FAO2YhiatHvt4ugdyB2Yo1NiZzcBm7ZLg5/w="),
-	// }
-	// fmt.Println(VerifyMessage(message, false))
-	//ppkk, _ := new(big.Int).SetString("f2693ef943df4b25eec8310ec3ea4bc146e084f5c524b1ea7cca390e1469c46b", 16)
-	w := "L38WQxF2njcyvgjAZ1f4n1cN7yp793VEopHaxav8er7HN5JLeriu"
-	sd, err := NewPrivateKey(nil, &w)
-	if err != nil {
-		fmt.Println(err)
+	if err := root(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
-	fmt.Println(sd.raw)
-	var wg sync.WaitGroup
-	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ssd, err := NewPrivateKey(nil, nil)
-			if err != nil {
-				panic(err)
-			}
-			msg, err := SignMessage(ssd, "legacy", "ECDSA is the most fun I have ever experienced", true, false)
-			if err != nil {
-				panic(err)
-			}
-			fmt.Println(string(msg.Signature))
-
-			_, _, _, err = VerifyMessage(msg, false)
-			if err != nil {
-				panic(err)
-			}
-
-			//fmt.Println(verified, pub, message)
-		}()
-
-	}
-	wg.Wait()
-	fmt.Println(bitsToInt([]byte("Hello jshakdhasjkdhaskjdhkasjhdkjashdjkashdjks"), 1123))
-	fmt.Println(hex.EncodeToString(intToOct(big.NewInt(65533), 3)))
-	fmt.Println(hex.EncodeToString(bitsToOct([]byte("Hello jshakdhasjkdhaskjdhkasjhdkjashdjkashdjks"), big.NewInt(6533), 36, 12)))
-	fmt.Println(2 + 3>>2)
-	var d big.Int
-	fmt.Println(d.Add(two, three).Rsh(&d, 2))
-	fmt.Println(rfcSign(big.NewInt(6553365533564754), big.NewInt(65533)))
-	_, err = NewPrivateKey(big.NewInt(1000), &w)
-	fmt.Println(errors.Unwrap(err))
-
-	_, _, _, err = VerifyMessage(&BitcoinMessage{Address: "ss", Data: "dddf", Signature: []byte("Gdggdgd")}, false)
-	//var dddd *SignatureError
-	fmt.Println(time.Since(start))
-
 }
