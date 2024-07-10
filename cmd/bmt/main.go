@@ -1,4 +1,4 @@
-package main
+package bmt
 
 import (
 	"bufio"
@@ -1594,7 +1594,7 @@ type Runner interface {
 	Name() string
 }
 
-func root(args []string) error {
+func Root(args []string) error {
 	flags.Usage = func() {
 		fmt.Println(usagePrefix)
 		flags.PrintDefaults()
@@ -1621,11 +1621,4 @@ func root(args []string) error {
 		}
 	}
 	return fmt.Errorf("bmt: '%s' is not a bmt command. See 'bmt -h'", subcommand)
-}
-
-func main() {
-	if err := root(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
 }
