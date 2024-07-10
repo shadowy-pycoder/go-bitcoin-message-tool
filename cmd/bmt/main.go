@@ -14,8 +14,11 @@ import (
 	"hash"
 	"math/big"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
@@ -135,6 +138,27 @@ H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd
 true
 message verified to be from 16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
 02700317e20cefbcd8a9e2f294ff2585bc0b8dc981bfe68f72c42497d1b5239988
+`
+	createUsagePrefix = `Usage bmt create [-h] [-n {1...1000000}] [-path]
+Options:
+`
+	createUsageExamples = `
+Examples:
+
+Create 100 key pairs with addresses and write to wallets.txt
+
+bmt create -n 100 -path=./wallets.txt
+
+Create a wallet and print to console (you can redirect output to a file)
+
+bmt create -n 1
+Private Key (Raw): 60180445912902181241548287604652662614241904941006823251259342289760572987478
+Private Key (WIF): L1gLtHEKG4FbbxQDzth3ksCZ4jTSjRvcU7K2KDeDE368pG8MjkFg
+Public Key (Raw): (x=47540055824935908510461373219072689454917771939693273636263256867956974171064, y=80481361684980169856026167260820025559478707302150175078848962789012628471346)
+Public Key (HEX Copmpressed): 02691ab7d2b2e1b41a8df334a5471a3abd7a93c8822b2abf3de64c552147dc33b8
+Legacy Address: 1N3kZRUrEioGxXQbSyCWuBwmoFp4T62i93
+Nested SegWit Address: 3KWsrxLMHPU1v8riptj33zCsWD8bf6jfLF
+Native SegWit Address: bc1qum0at29ayuq2ndk39z4zwf4zdpxv5ker570ape
 `
 	beginSignedMessage = "-----BEGIN BITCOIN SIGNED MESSAGE-----"
 	beginSignature     = "-----BEGIN BITCOIN SIGNATURE-----"
@@ -356,9 +380,25 @@ func (pt *JacobianPoint) ToAffine() *Point {
 	return &Point{X: &x, Y: &y}
 }
 
+// String returns a string representation of the JacobianPoint struct.
+//
+// It returns a string in the format "(x=<X>, y=<Y>, z=<Z>)", where <X>, <Y> and <Z> are the
+// string representations of the X, Y and Z coordinates of the JacobianPoint.
+func (pt *JacobianPoint) String() string {
+	return fmt.Sprintf("(x=%s, y=%s, z=%s)", pt.X, pt.Y, pt.Z)
+}
+
 type Point struct {
 	X *big.Int
 	Y *big.Int
+}
+
+// String returns a string representation of the Point struct.
+//
+// It returns a string in the format "(x=<X>, y=<Y>)", where <X> and <Y> are the
+// string representations of the X and Y coordinates of the Point.
+func (pt *Point) String() string {
+	return fmt.Sprintf("(x=%s, y=%s)", pt.X, pt.Y)
 }
 
 // ToJacobian converts a point from affine coordinates to Jacobian coordinates.
@@ -406,9 +446,9 @@ type BitcoinMessage struct {
 }
 
 type PrivateKey struct {
-	raw          *big.Int
-	wif          *string
-	uncompressed bool
+	Raw          *big.Int
+	Wif          *string
+	Uncompressed bool
 }
 
 // generate generates a random big.Int value within the range of secp256k1.NCurve.
@@ -451,37 +491,37 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 		return nil, &PrivateKeyError{Message: "cannot specify both raw and wif"}
 	}
 	if raw == nil && wif == nil {
-		pk.raw, err = generate()
+		pk.Raw, err = generate()
 		if err != nil {
 			return nil, err
 		}
-		if !ValidKey(pk.raw) {
+		if !ValidKey(pk.Raw) {
 			return nil, OutOfRangeError
 		}
-		pk.uncompressed = false
-		encoded, err := pk.Wif(pk.uncompressed)
+		pk.Uncompressed = false
+		encoded, err := pk.ToWif(pk.Uncompressed)
 		if err != nil {
 			return nil, err
 		}
-		pk.wif = encoded
+		pk.Wif = encoded
 	} else if wif == nil {
-		pk.raw = new(big.Int).Set(raw)
-		if !ValidKey(pk.raw) {
+		pk.Raw = new(big.Int).Set(raw)
+		if !ValidKey(pk.Raw) {
 			return nil, OutOfRangeError
 		}
-		pk.uncompressed = false
-		encoded, err := pk.Wif(pk.uncompressed)
+		pk.Uncompressed = false
+		encoded, err := pk.ToWif(pk.Uncompressed)
 		if err != nil {
 			return nil, err
 		}
-		pk.wif = encoded
+		pk.Wif = encoded
 	} else if raw == nil {
-		pk.wif = wif
-		uncompressed, err := pk.Int()
+		pk.Wif = wif
+		uncompressed, err := pk.ToInt()
 		if err != nil {
 			return nil, err
 		}
-		pk.uncompressed = uncompressed
+		pk.Uncompressed = uncompressed
 	}
 	return &pk, nil
 }
@@ -491,7 +531,7 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 // It takes no parameters.
 // It returns three byte slices: the version byte, the private key bytes, and the checksum bytes.
 func (k *PrivateKey) SplitBytes() (version []byte, payload []byte, checkSum []byte, err error) {
-	privkey, err := base58.Decode(*k.wif)
+	privkey, err := base58.Decode(*k.Wif)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -505,11 +545,11 @@ func (k *PrivateKey) SplitBytes() (version []byte, payload []byte, checkSum []by
 // Int calculates the integer value of the private key.
 //
 // It returns a boolean indicating if the key is uncompressed and an error if any.
-func (k *PrivateKey) Int() (uncompressed bool, err error) {
+func (k *PrivateKey) ToInt() (uncompressed bool, err error) {
 	var (
 		privKeyInt big.Int
 	)
-	if k.wif == nil {
+	if k.Wif == nil {
 		return false, &PrivateKeyError{Message: "wif cannot be empty"}
 	}
 	version, priVkey, checkSum, err := k.SplitBytes()
@@ -529,7 +569,7 @@ func (k *PrivateKey) Int() (uncompressed bool, err error) {
 	if !ValidKey(&privKeyInt) {
 		return false, OutOfRangeError
 	}
-	k.raw = &privKeyInt
+	k.Raw = &privKeyInt
 	return uncompressed, nil
 }
 
@@ -537,18 +577,66 @@ func (k *PrivateKey) Int() (uncompressed bool, err error) {
 //
 // It takes a boolean uncompressed indicating if the key is uncompressed.
 // It returns a pointer to a string and an error.
-func (k *PrivateKey) Wif(uncompressed bool) (*string, error) {
-	if !ValidKey(k.raw) {
+func (k *PrivateKey) ToWif(uncompressed bool) (*string, error) {
+	if !ValidKey(k.Raw) {
 		return nil, OutOfRangeError
 	}
 	buf := make([]byte, 32)
-	pk := joinBytes([][]byte{{0x80}, k.raw.FillBytes(buf), {0x01}}...)
+	pk := joinBytes([][]byte{{0x80}, k.Raw.FillBytes(buf), {0x01}}...)
 	if uncompressed {
 		pk = pk[:len(pk)-1]
 	}
 	converted := base58.Encode(joinBytes([][]byte{pk, checkSum(pk)}...))
-	k.wif = &converted
-	return k.wif, nil
+	k.Wif = &converted
+	return k.Wif, nil
+}
+
+// CreateNewWallet generates a new wallet with private key, public key, and various address types.
+//
+// Returns:
+//   - A pointer to a Wallet struct representing the new wallet.
+func CreateNewWallet() *Wallet {
+	privKey, _ := NewPrivateKey(nil, nil)
+	rawPubKey, _ := createRawPubKey(privKey.Raw)
+	pubKey := createPubKey(rawPubKey, false)
+	legacyAddress := createAddress(pubKey)
+	nestedAddress := createNestedSegwit(pubKey)
+	nativeAddress := createNativeSegwit(pubKey)
+	return &Wallet{PrivKey: privKey,
+		RawPubKey: rawPubKey,
+		PubKey:    hex.EncodeToString(pubKey),
+		Legacy:    legacyAddress,
+		Nested:    nestedAddress,
+		Native:    nativeAddress}
+
+}
+
+type Wallet struct {
+	PrivKey   *PrivateKey
+	RawPubKey *Point
+	PubKey    string
+	Legacy    string
+	Nested    string
+	Native    string
+}
+
+// String returns a formatted string representation of the Wallet.
+//
+// It concatenates the private key (raw), private key (WIF), public key (raw),
+// public key (hex compressed), legacy address, nested segwit address, and
+// native segwit address into a single string.
+//
+// Returns:
+//   - A string containing the formatted representation of the Wallet.
+func (w *Wallet) String() string {
+	return fmt.Sprintf(`Private Key (Raw): %s
+Private Key (WIF): %s
+Public Key (Raw): %s
+Public Key (HEX Copmpressed): %s
+Legacy Address: %s
+Nested SegWit Address: %s
+Native SegWit Address: %s
+`, w.PrivKey.Raw, *w.PrivKey.Wif, w.RawPubKey, w.PubKey, w.Legacy, w.Nested, w.Native)
 }
 
 // ValidKey checks if the given big.Int scalar is a valid key.
@@ -1150,22 +1238,22 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 	)
 	mBytes := msgMagic(message)
 	msg.SetBytes(DoubleSHA256(mBytes))
-	rawPubKey, err := createRawPubKey(pk.raw)
+	rawPubKey, err := createRawPubKey(pk.Raw)
 	if err != nil {
 		return nil, err
 	}
-	pubKey := createPubKey(rawPubKey, pk.uncompressed)
+	pubKey := createPubKey(rawPubKey, pk.Uncompressed)
 	if !deterministic {
-		sig = sign(pk.raw, &msg)
+		sig = sign(pk.Raw, &msg)
 	} else {
-		sig = rfcSign(pk.raw, &msg)
+		sig = rfcSign(pk.Raw, &msg)
 	}
 	address, ver, err := deriveAddress(pubKey, addrType)
 	if err != nil {
 		return nil, err
 	}
 	if electrum {
-		if pk.uncompressed {
+		if pk.Uncompressed {
 			ver = 0
 		} else {
 			ver = 1
@@ -1228,6 +1316,48 @@ func parseRFCMessage(m string) *BitcoinMessage {
 		Address:   signature[0],
 		Data:      message,
 		Signature: []byte(signature[len(signature)-1])}
+}
+
+func CreateWallets(n int, path string) {
+	var wg sync.WaitGroup
+	walletChan := make(chan *Wallet)
+	done := make(chan struct{})
+	go func() {
+		if path == "" {
+			for w := range walletChan {
+				fmt.Println(w)
+			}
+		} else {
+			f, err := os.OpenFile(filepath.FromSlash(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			for w := range walletChan {
+				if _, err := f.WriteString(fmt.Sprintln(w)); err != nil {
+					f.Close() // ignore error; Write error takes precedence
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+
+			}
+			if err := f.Close(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+		done <- struct{}{}
+	}()
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			walletChan <- CreateNewWallet()
+		}()
+	}
+	wg.Wait()
+	close(walletChan)
+	<-done
 }
 
 func NewSignCommand() *SignCommand {
@@ -1404,6 +1534,60 @@ func (vc *VerifyCommand) Run() error {
 	return nil
 }
 
+func NewCreateWalletCommand() *CreateWalletCommand {
+	cwc := &CreateWalletCommand{
+		fs: flag.NewFlagSet("create", flag.ContinueOnError),
+	}
+	cwc.num = 1
+	errMsg := "bmt: values for -n flag should be within the range [1...1000000]"
+	cwc.fs.BoolVar(&cwc.help, "h", false, "show this help message and exit")
+	cwc.fs.Func("n", "number of wallets to create [1...1000000] (default 1)", func(flagValue string) error {
+		i, err := strconv.Atoi(flagValue)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, errMsg)
+			os.Exit(2)
+		}
+		if i <= 0 || i > 1000000 {
+			fmt.Fprintln(os.Stderr, errMsg)
+			os.Exit(2)
+		}
+		cwc.num = i
+		return nil
+	})
+	cwc.fs.StringVar(&cwc.path, "path", "", "path to a file to write created wallets (if ommited prints to stdout)")
+	return cwc
+}
+
+type CreateWalletCommand struct {
+	fs *flag.FlagSet
+
+	help bool
+	num  int
+	path string
+}
+
+func (cwc *CreateWalletCommand) Name() string {
+	return cwc.fs.Name()
+}
+
+func (cwc *CreateWalletCommand) Init(args []string) error {
+	cwc.fs.Usage = func() {
+		fmt.Println(createUsagePrefix)
+		cwc.fs.PrintDefaults()
+		fmt.Println(createUsageExamples)
+	}
+	return cwc.fs.Parse(args)
+}
+
+func (cwc *CreateWalletCommand) Run() error {
+	if cwc.help {
+		cwc.fs.Usage()
+		os.Exit(0)
+	}
+	CreateWallets(cwc.num, cwc.path)
+	return nil
+}
+
 type Runner interface {
 	Init([]string) error
 	Run() error
@@ -1425,6 +1609,7 @@ func root(args []string) error {
 	cmds := []Runner{
 		NewSignCommand(),
 		NewVerifyCommand(),
+		NewCreateWalletCommand(),
 	}
 
 	subcommand := args[0]
