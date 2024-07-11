@@ -43,14 +43,14 @@ var (
 	pow256       big.Int
 	pow256M1     = pow256.Exp(two, big.NewInt(256), nil).Sub(&pow256, one)
 	precomputes  = getPrecomputes()
-	secp256k1    = Secp256k1{
+	Secp256k1    = secp256k1{
 		PCurve:   pCurve,
 		NCurve:   nCurve,
 		ACurve:   aCurve,
 		BCurve:   bCurve,
 		GenPoint: NewJacobianPoint(genPointX, genPointY, one),
 	}
-	identityPoint = NewJacobianPoint(pCurve, zero, one)
+	IdentityPoint = NewJacobianPoint(pCurve, zero, one)
 	addressTypes  = []string{"legacy", "nested", "segwit"}
 	headers       = [5][4]byte{
 		{0x1b, 0x1c, 0x1d, 0x1e}, // 27 - 30 P2PKH uncompressed
@@ -235,18 +235,18 @@ func (pt *JacobianPoint) Eq(q *JacobianPoint) bool {
 // https://eprint.iacr.org/2013/816.pdf page 4
 func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
 	var Y2, S, M, x, y, z, tx, ty big.Int
-	if p.X.Cmp(secp256k1.PCurve) == 0 {
+	if p.X.Cmp(Secp256k1.PCurve) == 0 {
 		pt.X = new(big.Int).Set(p.X)
 		pt.Y = new(big.Int).Set(p.Y)
 		pt.Z = new(big.Int).Set(p.Z)
 		return pt
 	}
 	Y2.Mul(p.Y, p.Y)
-	S.Mul(four, p.X).Mul(&S, &Y2).Mod(&S, secp256k1.PCurve)
+	S.Mul(four, p.X).Mul(&S, &Y2).Mod(&S, Secp256k1.PCurve)
 	M.Mul(three, p.X).Mul(&M, p.X)
-	x.Mul(&M, &M).Sub(&x, tx.Mul(two, &S)).Mod(&x, secp256k1.PCurve)
-	y.Mul(&M, ty.Sub(&S, &x)).Sub(&y, ty.Mul(&Y2, &Y2).Mul(&ty, eight)).Mod(&y, secp256k1.PCurve)
-	z.Mul(two, p.Y).Mul(&z, p.Z).Mod(&z, secp256k1.PCurve)
+	x.Mul(&M, &M).Sub(&x, tx.Mul(two, &S)).Mod(&x, Secp256k1.PCurve)
+	y.Mul(&M, ty.Sub(&S, &x)).Sub(&y, ty.Mul(&Y2, &Y2).Mul(&ty, eight)).Mod(&y, Secp256k1.PCurve)
+	z.Mul(two, p.Y).Mul(&z, p.Z).Mod(&z, Secp256k1.PCurve)
 	pt.X = &x
 	pt.Y = &y
 	pt.Z = &z
@@ -269,13 +269,13 @@ func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
 // https://eprint.iacr.org/2013/816.pdf page 4
 func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 	var PZ2, QZ2, U1, U2, S1, S2, H, R, H2, H3, x, tx, y, ty, z big.Int
-	if p.X.Cmp(secp256k1.PCurve) == 0 {
+	if p.X.Cmp(Secp256k1.PCurve) == 0 {
 		pt.X = new(big.Int).Set(q.X)
 		pt.Y = new(big.Int).Set(q.Y)
 		pt.Z = new(big.Int).Set(q.Z)
 		return pt
 	}
-	if q.X.Cmp(secp256k1.PCurve) == 0 {
+	if q.X.Cmp(Secp256k1.PCurve) == 0 {
 		pt.X = new(big.Int).Set(p.X)
 		pt.Y = new(big.Int).Set(p.Y)
 		pt.Z = new(big.Int).Set(p.Z)
@@ -283,29 +283,29 @@ func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 	}
 	PZ2.Mul(p.Z, p.Z)
 	QZ2.Mul(q.Z, q.Z)
-	U1.Mul(p.X, &QZ2).Mod(&U1, secp256k1.PCurve)
-	U2.Mul(q.X, &PZ2).Mod(&U2, secp256k1.PCurve)
-	S1.Mul(p.Y, &QZ2).Mul(&S1, q.Z).Mod(&S1, secp256k1.PCurve)
-	S2.Mul(q.Y, &PZ2).Mul(&S2, p.Z).Mod(&S2, secp256k1.PCurve)
+	U1.Mul(p.X, &QZ2).Mod(&U1, Secp256k1.PCurve)
+	U2.Mul(q.X, &PZ2).Mod(&U2, Secp256k1.PCurve)
+	S1.Mul(p.Y, &QZ2).Mul(&S1, q.Z).Mod(&S1, Secp256k1.PCurve)
+	S2.Mul(q.Y, &PZ2).Mul(&S2, p.Z).Mod(&S2, Secp256k1.PCurve)
 
 	if U1.Cmp(&U2) == 0 {
 		if S1.Cmp(&S2) == 0 {
 			return pt.Dbl(p)
 		} else {
-			pt.X = new(big.Int).Set(identityPoint.X)
-			pt.Y = new(big.Int).Set(identityPoint.Y)
-			pt.Z = new(big.Int).Set(identityPoint.Z)
+			pt.X = new(big.Int).Set(IdentityPoint.X)
+			pt.Y = new(big.Int).Set(IdentityPoint.Y)
+			pt.Z = new(big.Int).Set(IdentityPoint.Z)
 			return pt
 		}
 
 	}
-	H.Sub(&U2, &U1).Mod(&H, secp256k1.PCurve)
-	R.Sub(&S2, &S1).Mod(&R, secp256k1.PCurve)
-	H2.Mul(&H, &H).Mod(&H2, secp256k1.PCurve)
-	H3.Mul(&H2, &H).Mod(&H3, secp256k1.PCurve)
-	x.Mul(&R, &R).Sub(&x, &H3).Sub(&x, tx.Mul(two, &U1).Mul(&tx, &H2)).Mod(&x, secp256k1.PCurve)
-	y.Mul(&R, y.Mul(&U1, &H2).Sub(&y, &x)).Sub(&y, ty.Mul(&S1, &H3)).Mod(&y, secp256k1.PCurve)
-	z.Mul(&H, p.Z).Mul(&z, q.Z).Mod(&z, secp256k1.PCurve)
+	H.Sub(&U2, &U1).Mod(&H, Secp256k1.PCurve)
+	R.Sub(&S2, &S1).Mod(&R, Secp256k1.PCurve)
+	H2.Mul(&H, &H).Mod(&H2, Secp256k1.PCurve)
+	H3.Mul(&H2, &H).Mod(&H3, Secp256k1.PCurve)
+	x.Mul(&R, &R).Sub(&x, &H3).Sub(&x, tx.Mul(two, &U1).Mul(&tx, &H2)).Mod(&x, Secp256k1.PCurve)
+	y.Mul(&R, y.Mul(&U1, &H2).Sub(&y, &x)).Sub(&y, ty.Mul(&S1, &H3)).Mod(&y, Secp256k1.PCurve)
+	z.Mul(&H, p.Z).Mul(&z, q.Z).Mod(&z, Secp256k1.PCurve)
 	pt.X = &x
 	pt.Y = &y
 	pt.Z = &z
@@ -314,7 +314,7 @@ func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 
 func getPrecomputes() []*JacobianPoint {
 	precomputes := make([]*JacobianPoint, 256)
-	p := NewJacobianPoint(secp256k1.GenPoint.X, secp256k1.GenPoint.Y, secp256k1.GenPoint.Z)
+	p := NewJacobianPoint(Secp256k1.GenPoint.X, Secp256k1.GenPoint.Y, Secp256k1.GenPoint.Z)
 	for i := range len(precomputes) {
 		precomputes[i] = NewJacobianPoint(p.X, p.Y, p.Z)
 		p.Dbl(p)
@@ -334,9 +334,9 @@ func getPrecomputes() []*JacobianPoint {
 func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
 	var n, fakeN big.Int
 	n.Set(scalar)
-	pnt := NewJacobianPoint(identityPoint.X, identityPoint.Y, identityPoint.Z)
+	pnt := NewJacobianPoint(IdentityPoint.X, IdentityPoint.Y, IdentityPoint.Z)
 	if p == nil {
-		fakeP := NewJacobianPoint(identityPoint.X, identityPoint.Y, identityPoint.Z)
+		fakeP := NewJacobianPoint(IdentityPoint.X, IdentityPoint.Y, IdentityPoint.Z)
 		fakeN.Xor(pow256M1, &n)
 		for _, q := range precomputes {
 			if IsOdd(&n) {
@@ -373,10 +373,10 @@ func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
 // A pointer to a Point representing the point in affine coordinates.
 func (pt *JacobianPoint) ToAffine() *Point {
 	var x, y big.Int
-	invZ := ModInverse(pt.Z, secp256k1.PCurve)
+	invZ := ModInverse(pt.Z, Secp256k1.PCurve)
 	invZ2 := new(big.Int).Exp(invZ, two, nil)
-	x.Mul(pt.X, invZ2).Mod(&x, secp256k1.PCurve)
-	y.Mul(pt.Y, invZ2).Mul(&y, invZ).Mod(&y, secp256k1.PCurve)
+	x.Mul(pt.X, invZ2).Mod(&x, Secp256k1.PCurve)
+	y.Mul(pt.Y, invZ2).Mul(&y, invZ).Mod(&y, Secp256k1.PCurve)
 	return &Point{X: &x, Y: &y}
 }
 
@@ -421,12 +421,12 @@ func (pt *Point) ToJacobian() *JacobianPoint {
 //   - bool: true if the point is valid, false otherwise.
 func (pt *Point) Valid() bool {
 	var r1, r2 big.Int
-	r1.Exp(pt.X, three, nil).Add(&r1, secp256k1.BCurve).Mod(&r1, secp256k1.PCurve)
-	r2.Exp(pt.Y, two, secp256k1.PCurve)
+	r1.Exp(pt.X, three, nil).Add(&r1, Secp256k1.BCurve).Mod(&r1, Secp256k1.PCurve)
+	r2.Exp(pt.Y, two, Secp256k1.PCurve)
 	return r1.Cmp(&r2) == 0
 }
 
-type Secp256k1 struct {
+type secp256k1 struct {
 	PCurve   *big.Int
 	NCurve   *big.Int
 	ACurve   *big.Int
@@ -455,7 +455,7 @@ type PrivateKey struct {
 //
 // It sets the value of the receiver PrivateKey's raw field to the generated random big.Int.
 func generate() (*big.Int, error) {
-	if n, err := rand.Int(rand.Reader, secp256k1.NCurve); err != nil {
+	if n, err := rand.Int(rand.Reader, Secp256k1.NCurve); err != nil {
 		return nil, &PrivateKeyError{Message: "failed generating random ineteger", Err: err}
 	} else {
 		return n, nil
@@ -478,7 +478,7 @@ func generate() (*big.Int, error) {
 // The function checks if the generated or provided private key is valid.
 // If the private key is invalid, it returns an error.
 //
-// The function also encodes the generated or provided private key using the Wif() method.
+// The function also encodes the generated or provided private key using the ToWif() method.
 // If the encoding fails, it returns an error.
 //
 // The function returns a pointer to the newly created PrivateKey object.
@@ -526,11 +526,11 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 	return &pk, nil
 }
 
-// SplitBytes splits the private key bytes into three parts: the version byte, the private key bytes, and the checksum bytes.
+// splitBytes splits the private key bytes into three parts: the version byte, the private key bytes, and the checksum bytes.
 //
 // It takes no parameters.
 // It returns three byte slices: the version byte, the private key bytes, and the checksum bytes.
-func (k *PrivateKey) SplitBytes() (version []byte, payload []byte, checkSum []byte, err error) {
+func (k *PrivateKey) splitBytes() (version []byte, payload []byte, checkSum []byte, err error) {
 	privkey, err := base58.Decode(*k.Wif)
 	if err != nil {
 		return nil, nil, nil, err
@@ -542,7 +542,7 @@ func (k *PrivateKey) SplitBytes() (version []byte, payload []byte, checkSum []by
 	return privkey[:1], privkey[1 : pkLen-4], privkey[pkLen-4:], nil
 }
 
-// Int calculates the integer value of the private key.
+// ToInt calculates the integer value of the private key.
 //
 // It returns a boolean indicating if the key is uncompressed and an error if any.
 func (k *PrivateKey) ToInt() (uncompressed bool, err error) {
@@ -552,7 +552,7 @@ func (k *PrivateKey) ToInt() (uncompressed bool, err error) {
 	if k.Wif == nil {
 		return false, &PrivateKeyError{Message: "wif cannot be empty"}
 	}
-	version, priVkey, checkSum, err := k.SplitBytes()
+	version, priVkey, checkSum, err := k.splitBytes()
 	if err != nil {
 		return false, &PrivateKeyError{Message: "failed decoding wif string", Err: err}
 	}
@@ -573,7 +573,7 @@ func (k *PrivateKey) ToInt() (uncompressed bool, err error) {
 	return uncompressed, nil
 }
 
-// Wif generates the Wallet Import Format (WIF) for the private key.
+// ToWif generates the Wallet Import Format (WIF) for the private key.
 //
 // It takes a boolean uncompressed indicating if the key is uncompressed.
 // It returns a pointer to a string and an error.
@@ -650,7 +650,7 @@ func ValidKey(scalar *big.Int) bool {
 	if scalar == nil {
 		return false
 	}
-	return scalar.Cmp(zero) == 1 && scalar.Cmp(secp256k1.NCurve) == -1
+	return scalar.Cmp(zero) == 1 && scalar.Cmp(Secp256k1.NCurve) == -1
 }
 
 // IsOdd checks if the given big.Int is odd.
@@ -898,16 +898,16 @@ func signed(msg, privKey, k *big.Int) *Signature {
 		return nil
 	}
 	point := p.Mul(k, nil).ToAffine()
-	r.Set(point.X).Mod(&r, secp256k1.NCurve)
-	if r.Cmp(zero) == 0 || point.ToJacobian().Eq(identityPoint) {
+	r.Set(point.X).Mod(&r, Secp256k1.NCurve)
+	if r.Cmp(zero) == 0 || point.ToJacobian().Eq(IdentityPoint) {
 		return nil
 	}
-	s.Mul(ModInverse(k, secp256k1.NCurve), s.Add(msg, s.Mul(privKey, &r))).Mod(&s, secp256k1.NCurve)
+	s.Mul(ModInverse(k, Secp256k1.NCurve), s.Add(msg, s.Mul(privKey, &r))).Mod(&s, Secp256k1.NCurve)
 	if s.Cmp(zero) == 0 {
 		return nil
 	}
-	if s.Cmp(new(big.Int).Rsh(secp256k1.NCurve, 1)) == 1 {
-		s.Sub(secp256k1.NCurve, &s)
+	if s.Cmp(new(big.Int).Rsh(Secp256k1.NCurve, 1)) == 1 {
+		s.Sub(Secp256k1.NCurve, &s)
 	}
 	return &Signature{R: &r, S: &s}
 }
@@ -1022,7 +1022,7 @@ func rfcSign(x, msg *big.Int) *Signature {
 		sig    *Signature
 	)
 	// https://www.rfc-editor.org/rfc/rfc6979 section 3.2.
-	q.Set(secp256k1.NCurve)
+	q.Set(Secp256k1.NCurve)
 	qLen := q.BitLen()
 	qoLen := qLen >> 3
 	roLen := (qLen + 7) >> 3
@@ -1149,10 +1149,10 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubke
 	if header < 27 || header > 46 {
 		return false, "", "", &SignatureError{Message: "header byte out of range"}
 	}
-	if r.Cmp(secp256k1.NCurve) >= 0 || r.Cmp(zero) == 0 {
+	if r.Cmp(Secp256k1.NCurve) >= 0 || r.Cmp(zero) == 0 {
 		return false, "", "", &SignatureError{Message: "r-value out of range"}
 	}
-	if s.Cmp(secp256k1.NCurve) >= 0 || s.Cmp(zero) == 0 {
+	if s.Cmp(Secp256k1.NCurve) >= 0 || s.Cmp(zero) == 0 {
 		return false, "", "", &SignatureError{Message: "s-value out of range"}
 	}
 	uncompressed := false
@@ -1172,21 +1172,21 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubke
 		uncompressed = true
 	}
 	recId := big.NewInt(int64(header - 27))
-	x.Add(r, x.Mul(secp256k1.NCurve, new(big.Int).Rsh(recId, 1)))
-	alpha.Exp(&x, three, nil).Add(&alpha, secp256k1.BCurve).Mod(&alpha, secp256k1.PCurve)
-	beta.Exp(&alpha, bt.Add(secp256k1.PCurve, one).Rsh(&bt, 2), secp256k1.PCurve)
+	x.Add(r, x.Mul(Secp256k1.NCurve, new(big.Int).Rsh(recId, 1)))
+	alpha.Exp(&x, three, nil).Add(&alpha, Secp256k1.BCurve).Mod(&alpha, Secp256k1.PCurve)
+	beta.Exp(&alpha, bt.Add(Secp256k1.PCurve, one).Rsh(&bt, 2), Secp256k1.PCurve)
 	y.Set(&beta)
 	if IsOdd(new(big.Int).Sub(&beta, recId)) {
-		y.Sub(secp256k1.PCurve, &beta)
+		y.Sub(Secp256k1.PCurve, &beta)
 	}
 	R := NewJacobianPoint(&x, &y, one)
 	mBytes := msgMagic(message.Data)
 	z.SetBytes(DoubleSHA256(mBytes))
-	e.Set(new(big.Int).Neg(&z)).Mod(&e, secp256k1.NCurve)
+	e.Set(new(big.Int).Neg(&z)).Mod(&e, Secp256k1.NCurve)
 	p.Mul(s, R)
-	q.Mul(&e, secp256k1.GenPoint)
+	q.Mul(&e, Secp256k1.GenPoint)
 	Q.Add(&p, &q)
-	rawPubKey := pk.Mul(ModInverse(r, secp256k1.NCurve), &Q).ToAffine()
+	rawPubKey := pk.Mul(ModInverse(r, Secp256k1.NCurve), &Q).ToAffine()
 	pubKey := createPubKey(rawPubKey, uncompressed)
 	if electrum && !uncompressed {
 		for _, addrType := range addressTypes {
@@ -1280,7 +1280,10 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 	return nil, &SignatureError{Message: "invalid signature parameters"}
 }
 
-func printMessage(bm *BitcoinMessage) {
+// PrintMessage prints signed message in RFC2440-like format
+//
+// https://datatracker.ietf.org/doc/html/rfc2440
+func PrintMessage(bm *BitcoinMessage) {
 	fmt.Println(beginSignedMessage)
 	fmt.Println(bm.Data)
 	fmt.Println(beginSignature)
@@ -1298,7 +1301,14 @@ func trimCRLF(s string) string {
 	return msg
 }
 
-func parseRFCMessage(m string) *BitcoinMessage {
+// ParseRFCMessage parses a given message (RFC2440-like format) string into a BitcoinMessage struct.
+//
+// Parameters:
+//   - m: a string representing the message to be parsed.
+//
+// Returns:
+//   - *BitcoinMessage: a pointer to a BitcoinMessage struct containing the parsed message data.
+func ParseRFCMessage(m string) *BitcoinMessage {
 	ind1 := strings.Index(m, beginSignedMessage)
 	ind2 := strings.Index(m, beginSignature)
 	ind3 := strings.Index(m, endSignature)
@@ -1318,6 +1328,14 @@ func parseRFCMessage(m string) *BitcoinMessage {
 		Signature: []byte(signature[len(signature)-1])}
 }
 
+// CreateWallets generates a specified number of wallets and either prints them to the console or writes them to a file.
+//
+// Parameters:
+// - n: the number of wallets to generate.
+// - path: the path to the file where the wallets should be written. If empty, the wallets will be printed to the console.
+//
+// Returns:
+// None.
 func CreateWallets(n int, path string) {
 	var wg sync.WaitGroup
 	walletChan := make(chan *Wallet)
@@ -1360,8 +1378,8 @@ func CreateWallets(n int, path string) {
 	<-done
 }
 
-func NewSignCommand() *SignCommand {
-	sc := &SignCommand{
+func newCmdSign() *cmdSign {
+	sc := &cmdSign{
 		fs: flag.NewFlagSet("sign", flag.ContinueOnError),
 	}
 	sc.fs.BoolVar(&sc.help, "h", false, "show this help message and exit")
@@ -1393,7 +1411,7 @@ func NewSignCommand() *SignCommand {
 	return sc
 }
 
-type SignCommand struct {
+type cmdSign struct {
 	fs *flag.FlagSet
 
 	help          bool
@@ -1404,11 +1422,11 @@ type SignCommand struct {
 	message       string
 }
 
-func (sc *SignCommand) Name() string {
+func (sc *cmdSign) Name() string {
 	return sc.fs.Name()
 }
 
-func (sc *SignCommand) Init(args []string) error {
+func (sc *cmdSign) Init(args []string) error {
 	sc.fs.Usage = func() {
 		fmt.Println(signUsagePrefix)
 		sc.fs.PrintDefaults()
@@ -1417,7 +1435,7 @@ func (sc *SignCommand) Init(args []string) error {
 	return sc.fs.Parse(args)
 }
 
-func (sc *SignCommand) Run() error {
+func (sc *cmdSign) Run() error {
 	if sc.help {
 		sc.fs.Usage()
 		os.Exit(0)
@@ -1438,12 +1456,12 @@ func (sc *SignCommand) Run() error {
 	if err != nil {
 		return fmt.Errorf("bmt: failed signing message: %w", err)
 	}
-	printMessage(bm)
+	PrintMessage(bm)
 	return nil
 }
 
-func NewVerifyCommand() *VerifyCommand {
-	vc := &VerifyCommand{
+func newCmdVerify() *cmdVerify {
+	vc := &cmdVerify{
 		fs: flag.NewFlagSet("verify", flag.ContinueOnError),
 	}
 	vc.message = &BitcoinMessage{}
@@ -1469,7 +1487,7 @@ func NewVerifyCommand() *VerifyCommand {
 				break
 			}
 		}
-		message := parseRFCMessage(strings.Join(lines, "\n"))
+		message := ParseRFCMessage(strings.Join(lines, "\n"))
 		if message == nil {
 			fmt.Fprintln(os.Stderr, "bmt: failed parsing message")
 			os.Exit(2)
@@ -1481,7 +1499,7 @@ func NewVerifyCommand() *VerifyCommand {
 	return vc
 }
 
-type VerifyCommand struct {
+type cmdVerify struct {
 	fs *flag.FlagSet
 
 	help     bool
@@ -1492,11 +1510,11 @@ type VerifyCommand struct {
 	message  *BitcoinMessage
 }
 
-func (vc *VerifyCommand) Name() string {
+func (vc *cmdVerify) Name() string {
 	return vc.fs.Name()
 }
 
-func (vc *VerifyCommand) Init(args []string) error {
+func (vc *cmdVerify) Init(args []string) error {
 	vc.fs.Usage = func() {
 		fmt.Println(verifyUsagePrefix)
 		vc.fs.PrintDefaults()
@@ -1505,7 +1523,7 @@ func (vc *VerifyCommand) Init(args []string) error {
 	return vc.fs.Parse(args)
 }
 
-func (vc *VerifyCommand) Run() error {
+func (vc *cmdVerify) Run() error {
 	if vc.help {
 		vc.fs.Usage()
 		os.Exit(0)
@@ -1534,8 +1552,8 @@ func (vc *VerifyCommand) Run() error {
 	return nil
 }
 
-func NewCreateWalletCommand() *CreateWalletCommand {
-	cwc := &CreateWalletCommand{
+func newCmdCreateWallet() *cmdCreateWallet {
+	cwc := &cmdCreateWallet{
 		fs: flag.NewFlagSet("create", flag.ContinueOnError),
 	}
 	cwc.num = 1
@@ -1558,7 +1576,7 @@ func NewCreateWalletCommand() *CreateWalletCommand {
 	return cwc
 }
 
-type CreateWalletCommand struct {
+type cmdCreateWallet struct {
 	fs *flag.FlagSet
 
 	help bool
@@ -1566,11 +1584,11 @@ type CreateWalletCommand struct {
 	path string
 }
 
-func (cwc *CreateWalletCommand) Name() string {
+func (cwc *cmdCreateWallet) Name() string {
 	return cwc.fs.Name()
 }
 
-func (cwc *CreateWalletCommand) Init(args []string) error {
+func (cwc *cmdCreateWallet) Init(args []string) error {
 	cwc.fs.Usage = func() {
 		fmt.Println(createUsagePrefix)
 		cwc.fs.PrintDefaults()
@@ -1579,7 +1597,7 @@ func (cwc *CreateWalletCommand) Init(args []string) error {
 	return cwc.fs.Parse(args)
 }
 
-func (cwc *CreateWalletCommand) Run() error {
+func (cwc *cmdCreateWallet) Run() error {
 	if cwc.help {
 		cwc.fs.Usage()
 		os.Exit(0)
@@ -1594,6 +1612,7 @@ type Runner interface {
 	Name() string
 }
 
+// Root is an entrypoint to bmt CLI application
 func Root(args []string) error {
 	flags.Usage = func() {
 		fmt.Println(usagePrefix)
@@ -1607,9 +1626,9 @@ func Root(args []string) error {
 		os.Exit(0)
 	}
 	cmds := []Runner{
-		NewSignCommand(),
-		NewVerifyCommand(),
-		NewCreateWalletCommand(),
+		newCmdSign(),
+		newCmdVerify(),
+		newCmdCreateWallet(),
 	}
 
 	subcommand := args[0]
