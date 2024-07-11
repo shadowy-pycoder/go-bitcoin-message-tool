@@ -81,6 +81,7 @@ Commands:
 
   sign         Create bitcoin message 
   verify       Verify bitcoin message 
+  create       Create wallet (private key, public key, addresses)
 `
 	signUsagePrefix = `Usage bmt sign [-h] -p -a {legacy, nested, segwit} -m [MESSAGE ...] [-d] [-e]
 Options:
