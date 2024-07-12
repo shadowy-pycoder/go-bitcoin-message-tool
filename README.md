@@ -33,6 +33,7 @@ Commands:
 
   sign         Create bitcoin message 
   verify       Verify bitcoin message 
+  create       Create wallet (private key, public key, addresses)
 ``` 
 
 ### Message signing

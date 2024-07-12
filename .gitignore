@@ -25,3 +25,5 @@ env.bak/
 
 # https/tls
 tls/
+
+*.prof

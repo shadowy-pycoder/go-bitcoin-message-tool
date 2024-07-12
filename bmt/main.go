@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -457,7 +458,7 @@ type PrivateKey struct {
 // It sets the value of the receiver PrivateKey's raw field to the generated random big.Int.
 func generate() (*big.Int, error) {
 	if n, err := rand.Int(rand.Reader, Secp256k1.NCurve); err != nil {
-		return nil, &PrivateKeyError{Message: "failed generating random ineteger", Err: err}
+		return nil, &PrivateKeyError{Message: "failed generating random integer", Err: err}
 	} else {
 		return n, nil
 	}
@@ -500,10 +501,7 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 			return nil, OutOfRangeError
 		}
 		pk.Uncompressed = false
-		encoded, err := pk.ToWif(pk.Uncompressed)
-		if err != nil {
-			return nil, err
-		}
+		encoded, _ := pk.ToWif(pk.Uncompressed)
 		pk.Wif = encoded
 	} else if wif == nil {
 		pk.Raw = new(big.Int).Set(raw)
@@ -511,10 +509,7 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 			return nil, OutOfRangeError
 		}
 		pk.Uncompressed = false
-		encoded, err := pk.ToWif(pk.Uncompressed)
-		if err != nil {
-			return nil, err
-		}
+		encoded, _ := pk.ToWif(pk.Uncompressed)
 		pk.Wif = encoded
 	} else if raw == nil {
 		pk.Wif = wif
@@ -594,22 +589,38 @@ func (k *PrivateKey) ToWif(uncompressed bool) (*string, error) {
 
 // CreateNewWallet generates a new wallet with private key, public key, and various address types.
 //
+// Parameters:
+//
+//   - raw: a pointer to a big.Int object representing the raw value of the private key.
+//   - wif: a pointer to a string representing the WIF (Wallet Import Format) of the private key.
+//
 // Returns:
 //   - A pointer to a Wallet struct representing the new wallet.
-func CreateNewWallet() *Wallet {
-	privKey, _ := NewPrivateKey(nil, nil)
-	rawPubKey, _ := createRawPubKey(privKey.Raw)
-	pubKey := createPubKey(rawPubKey, false)
+//   - An error if any occurred during the generation process.
+//
+// If both parameters are nil generates a random wallet
+func CreateNewWallet(raw *big.Int, wif *string) (*Wallet, error) {
+	var nestedAddress, nativeAddress string
+	privKey, err := NewPrivateKey(raw, wif)
+	if err != nil {
+		return nil, err
+	}
+	rawPubKey, err := createRawPubKey(privKey.Raw)
+	if err != nil {
+		return nil, err
+	}
+	pubKey := createPubKey(rawPubKey, privKey.Uncompressed)
 	legacyAddress := createAddress(pubKey)
-	nestedAddress := createNestedSegwit(pubKey)
-	nativeAddress := createNativeSegwit(pubKey)
+	if !privKey.Uncompressed {
+		nestedAddress = createNestedSegwit(pubKey)
+		nativeAddress = createNativeSegwit(pubKey)
+	}
 	return &Wallet{PrivKey: privKey,
 		RawPubKey: rawPubKey,
 		PubKey:    hex.EncodeToString(pubKey),
 		Legacy:    legacyAddress,
 		Nested:    nestedAddress,
-		Native:    nativeAddress}
-
+		Native:    nativeAddress}, nil
 }
 
 type Wallet struct {
@@ -1339,6 +1350,7 @@ func ParseRFCMessage(m string) *BitcoinMessage {
 // None.
 func CreateWallets(n int, path string) {
 	var wg sync.WaitGroup
+	jobs := make(chan struct{}, runtime.NumCPU())
 	walletChan := make(chan *Wallet)
 	done := make(chan struct{})
 	go func() {
@@ -1369,9 +1381,12 @@ func CreateWallets(n int, path string) {
 	}()
 	wg.Add(n)
 	for range n {
+		jobs <- struct{}{}
 		go func() {
 			defer wg.Done()
-			walletChan <- CreateNewWallet()
+			w, _ := CreateNewWallet(nil, nil)
+			walletChan <- w
+			<-jobs
 		}()
 	}
 	wg.Wait()
