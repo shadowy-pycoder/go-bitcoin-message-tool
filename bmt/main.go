@@ -374,6 +374,9 @@ func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
 // Returns:
 // A pointer to a Point representing the point in affine coordinates.
 func (pt *JacobianPoint) ToAffine() *Point {
+	if pt.X.Cmp(Secp256k1.PCurve) == 0 {
+		return &Point{X: new(big.Int).Set(IdentityPoint.X), Y: new(big.Int).Set(IdentityPoint.Y)}
+	}
 	var x, y big.Int
 	invZ := ModInverse(pt.Z, Secp256k1.PCurve)
 	invZ2 := new(big.Int).Exp(invZ, two, nil)
@@ -387,7 +390,7 @@ func (pt *JacobianPoint) ToAffine() *Point {
 // It returns a string in the format "(x=<X>, y=<Y>, z=<Z>)", where <X>, <Y> and <Z> are the
 // string representations of the X, Y and Z coordinates of the JacobianPoint.
 func (pt *JacobianPoint) String() string {
-	return fmt.Sprintf("(x=%s, y=%s, z=%s)", pt.X, pt.Y, pt.Z)
+	return fmt.Sprintf("(X=%s, Y=%s, Z=%s)", pt.X, pt.Y, pt.Z)
 }
 
 type Point struct {
@@ -395,12 +398,23 @@ type Point struct {
 	Y *big.Int
 }
 
+// Eq compares the current Point with another nPoint.
+//
+// Parameters:
+//   - q: the Point to compare with.
+//
+// Returns:
+//   - bool: true if the points are equal, false otherwise.
+func (pt *Point) Eq(q *Point) bool {
+	return pt.X.Cmp(q.X) == 0 && pt.Y.Cmp(q.Y) == 0
+}
+
 // String returns a string representation of the Point struct.
 //
 // It returns a string in the format "(x=<X>, y=<Y>)", where <X> and <Y> are the
 // string representations of the X and Y coordinates of the Point.
 func (pt *Point) String() string {
-	return fmt.Sprintf("(x=%s, y=%s)", pt.X, pt.Y)
+	return fmt.Sprintf("(X=%s, Y=%s)", pt.X, pt.Y)
 }
 
 // ToJacobian converts a point from affine coordinates to Jacobian coordinates.
@@ -422,9 +436,12 @@ func (pt *Point) ToJacobian() *JacobianPoint {
 // Returns:
 //   - bool: true if the point is valid, false otherwise.
 func (pt *Point) Valid() bool {
+	if pt.X.Cmp(Secp256k1.PCurve) == 0 {
+		return false
+	}
 	var r1, r2 big.Int
 	r1.Exp(pt.X, three, nil).Add(&r1, Secp256k1.BCurve).Mod(&r1, Secp256k1.PCurve)
-	r2.Exp(pt.Y, two, Secp256k1.PCurve)
+	r2.Exp(pt.Y, two, nil).Mod(&r2, Secp256k1.PCurve)
 	return r1.Cmp(&r2) == 0
 }
 
