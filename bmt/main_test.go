@@ -382,3 +382,173 @@ func TestMulPoint(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRFCMessage(t *testing.T) {
+	var testcases = []struct {
+		name     string
+		message  string
+		expected *BitcoinMessage
+	}{
+		{
+			name: "correctly formatted message",
+			message: `-----BEGIN BITCOIN SIGNED MESSAGE-----
+ECDSA is the most fun I have ever experienced
+-----BEGIN BITCOIN SIGNATURE-----
+16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
+
+H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
+-----END BITCOIN SIGNATURE-----
+			`,
+			expected: &BitcoinMessage{
+				Address:   "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
+				Data:      "ECDSA is the most fun I have ever experienced",
+				Signature: []byte("H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI="),
+			},
+		},
+		{
+			name: "fancy message",
+			message: `-----BEGIN BITCOIN SIGNED MESSAGE-----
+ECDSA is the most fun I have ever experienced
+
+🖐 😀😃😄😁😆😅😂🤣🥲🥹☺️😊😇🙂🙃😉😌😍🥰😘😗😙😚😋
+
+👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
+
+👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ
+-----BEGIN BITCOIN SIGNATURE-----
+16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
+
+H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
+-----END BITCOIN SIGNATURE-----
+			`,
+			expected: &BitcoinMessage{
+				Address: "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
+				Data: `ECDSA is the most fun I have ever experienced
+
+🖐 😀😃😄😁😆😅😂🤣🥲🥹☺️😊😇🙂🙃😉😌😍🥰😘😗😙😚😋
+
+👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
+
+👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ`,
+				Signature: []byte("H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI="),
+			},
+		},
+		{
+			name: "message with misplaced fields",
+			message: `-----BEGIN BITCOIN SIGNATURE-----
+16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
+
+H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
+-----END BITCOIN SIGNATURE-----
+-----BEGIN BITCOIN SIGNED MESSAGE-----
+ECDSA is the most fun I have ever experienced
+			`,
+			expected: nil,
+		},
+		{
+			name:     "empty message",
+			message:  "",
+			expected: nil,
+		},
+	}
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			actual := ParseRFCMessage(testcase.message)
+			require.Equal(t, testcase.expected, actual)
+		})
+	}
+}
+
+func TestSignMessage(t *testing.T) {
+	var testcases = []struct {
+		name          string
+		privKey       *string
+		addrType      string
+		message       string
+		deterministic bool
+		electrum      bool
+		expected      *BitcoinMessage
+	}{
+		{
+			name:          "sign message deterministically with legacy address",
+			privKey:       NewStr("Ky89h1iA6vwjpD4yUaJJ3ZXnXm5iCRPpNWY4LiDJZmtU9bvQoXqb"),
+			addrType:      "legacy",
+			message:       "ECDSA is the most fun I have ever experienced",
+			deterministic: true,
+			electrum:      false,
+			expected: &BitcoinMessage{
+				Address:   "133XqEAPNSYfAuPkjPChYLiEM64TnS6f7q",
+				Data:      "ECDSA is the most fun I have ever experienced",
+				Signature: []byte("HxsPQKwkQF5VWA/iEt1cszOIFJFUNqAmIZW5PRaDGWSYIQFD/sPwtqCozKd87CzrQ9huLmgtjdcLnJwpez3uhwc=")},
+		},
+		{
+			name:          "sign message deterministically with nested segwit address",
+			privKey:       NewStr("L1ztTW19cLchYbbtt9bCdyBbNZTg1GScf8NRVH1ovxpfiqUBrhKM"),
+			addrType:      "nested",
+			message:       "ECDSA is the most fun I have ever experienced",
+			deterministic: true,
+			electrum:      false,
+			expected: &BitcoinMessage{
+				Address:   "3C7MT5Tt3HM8ZF6T14yVsbRFtiBkY1fCZS",
+				Data:      "ECDSA is the most fun I have ever experienced",
+				Signature: []byte("IwxiTLdDP2UwA/ST1hHo3QErhmkM4+epqAs4HLESVvigaak0gJqlU+B3oB4vxsMluKosDr1NW8ZJMA4USmwUMr0=")},
+		},
+		{
+			name:          "sign message deterministically with segwit address",
+			privKey:       NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
+			addrType:      "segwit",
+			message:       "ECDSA is the most fun I have ever experienced",
+			deterministic: true,
+			electrum:      false,
+			expected: &BitcoinMessage{
+				Address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
+				Data:      "ECDSA is the most fun I have ever experienced",
+				Signature: []byte("JwGZV037XaS2TOWPJ1daKxOOsn6K4nN9LuDP/gTGr7Fkebu55Lg1pX92A1TivTLoY0/ZVAvAju6Epqoc/5mY5og=")},
+		},
+		{
+			name:     "sign fancy message deterministically with segwit address",
+			privKey:  NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
+			addrType: "segwit",
+			message: `ECDSA is the most fun I have ever experienced
+
+🖐 😀😃😄😁😆😅😂🤣🥲🥹☺️😊😇🙂🙃😉😌😍🥰😘😗😙😚😋
+
+👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
+
+👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ`,
+			deterministic: true,
+			electrum:      false,
+			expected: &BitcoinMessage{
+				Address: "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
+				Data: `ECDSA is the most fun I have ever experienced
+
+🖐 😀😃😄😁😆😅😂🤣🥲🥹☺️😊😇🙂🙃😉😌😍🥰😘😗😙😚😋
+
+👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
+
+👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ`,
+				Signature: []byte("JyuK4LW99LnBBoun2LnAO20ROP7BAfpW8GoN9fyBh9ICbEoYSY9uF9yrRvTTk/QBW5WZhlPZCih4yN3KVJbEggg=")},
+		},
+		{
+			name:          "sign message deterministically with segwit address using electrum standard",
+			privKey:       NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
+			addrType:      "segwit",
+			message:       "ECDSA is the most fun I have ever experienced",
+			deterministic: true,
+			electrum:      true,
+			expected: &BitcoinMessage{
+				Address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
+				Data:      "ECDSA is the most fun I have ever experienced",
+				Signature: []byte("HwGZV037XaS2TOWPJ1daKxOOsn6K4nN9LuDP/gTGr7Fkebu55Lg1pX92A1TivTLoY0/ZVAvAju6Epqoc/5mY5og=")},
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			pk, _ := NewPrivateKey(nil, testcase.privKey)
+			actual, err := SignMessage(pk, testcase.addrType, testcase.message, testcase.deterministic, testcase.electrum)
+			require.NoError(t, err)
+			require.Equal(t, testcase.expected, actual)
+		})
+	}
+}

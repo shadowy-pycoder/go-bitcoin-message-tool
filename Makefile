@@ -5,7 +5,7 @@ build:
 	go build  -o ./bin/ ./cmd/${APP_NAME}/
 
 bench:
-	go test -o ${TEST_DIR} ${TEST_DIR} -bench=. -run=^$$ -benchtime 10000x -cpuprofile='${TEST_DIR}/cpu.prof' -memprofile='${TEST_DIR}/mem.prof'
+	go test -o ${TEST_DIR} ${TEST_DIR} -bench=. -benchmem -run=^$$ -benchtime 10000x -cpuprofile='${TEST_DIR}/cpu.prof' -memprofile='${TEST_DIR}/mem.prof'
 
 test:
 	go test -o ${TEST_DIR} -v -count=1 ${TEST_DIR}
