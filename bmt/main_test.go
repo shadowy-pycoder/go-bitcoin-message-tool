@@ -1,11 +1,23 @@
 package bmt
 
 import (
+	"fmt"
 	"math/big"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+)
+
+const (
+	Message      = "ECDSA is the most fun I have ever experienced"
+	FancyMessage = `乇匚ᗪ丂卂 丨丂 ㄒ卄乇 爪ㄖ丂ㄒ 千ㄩ几 丨 卄卂ᐯ乇 乇ᐯ乇尺 乇乂卩乇尺丨乇几匚乇ᗪ
+
+😒🥷🐲👩‍🎓   🧑‍💻   🤴   😖   👬   💔   😸   🥱   🤐   ✍   💂‍♂️   🚣‍♀️  
+
+👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
+
+👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ`
 )
 
 // testTempFile creates a temporary file for testing purposes.
@@ -391,58 +403,46 @@ func TestParseRFCMessage(t *testing.T) {
 	}{
 		{
 			name: "correctly formatted message",
-			message: `-----BEGIN BITCOIN SIGNED MESSAGE-----
-ECDSA is the most fun I have ever experienced
+			message: fmt.Sprintf(`-----BEGIN BITCOIN SIGNED MESSAGE-----
+%s
 -----BEGIN BITCOIN SIGNATURE-----
 16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
 
 H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
 -----END BITCOIN SIGNATURE-----
-			`,
+			`, Message),
 			expected: &BitcoinMessage{
 				Address:   "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
-				Data:      "ECDSA is the most fun I have ever experienced",
+				Data:      Message,
 				Signature: []byte("H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI="),
 			},
 		},
 		{
 			name: "fancy message",
-			message: `-----BEGIN BITCOIN SIGNED MESSAGE-----
-ECDSA is the most fun I have ever experienced
-
-🖐 😀😃😄😁😆😅😂🤣🥲🥹☺️😊😇🙂🙃😉😌😍🥰😘😗😙😚😋
-
-👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
-
-👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ
+			message: fmt.Sprintf(`-----BEGIN BITCOIN SIGNED MESSAGE-----
+%s
 -----BEGIN BITCOIN SIGNATURE-----
 16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
 
 H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
 -----END BITCOIN SIGNATURE-----
-			`,
+			`, FancyMessage),
 			expected: &BitcoinMessage{
-				Address: "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
-				Data: `ECDSA is the most fun I have ever experienced
-
-🖐 😀😃😄😁😆😅😂🤣🥲🥹☺️😊😇🙂🙃😉😌😍🥰😘😗😙😚😋
-
-👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
-
-👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ`,
+				Address:   "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
+				Data:      FancyMessage,
 				Signature: []byte("H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI="),
 			},
 		},
 		{
 			name: "message with misplaced fields",
-			message: `-----BEGIN BITCOIN SIGNATURE-----
+			message: fmt.Sprintf(`-----BEGIN BITCOIN SIGNATURE-----
 16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
 
 H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
 -----END BITCOIN SIGNATURE-----
 -----BEGIN BITCOIN SIGNED MESSAGE-----
-ECDSA is the most fun I have ever experienced
-			`,
+%s
+			`, Message),
 			expected: nil,
 		},
 		{
@@ -459,7 +459,7 @@ ECDSA is the most fun I have ever experienced
 	}
 }
 
-func TestSignMessage(t *testing.T) {
+func TestSignMessageDeterministic(t *testing.T) {
 	var testcases = []struct {
 		name          string
 		privKey       *string
@@ -473,72 +473,60 @@ func TestSignMessage(t *testing.T) {
 			name:          "sign message deterministically with legacy address",
 			privKey:       NewStr("Ky89h1iA6vwjpD4yUaJJ3ZXnXm5iCRPpNWY4LiDJZmtU9bvQoXqb"),
 			addrType:      "legacy",
-			message:       "ECDSA is the most fun I have ever experienced",
+			message:       Message,
 			deterministic: true,
 			electrum:      false,
 			expected: &BitcoinMessage{
 				Address:   "133XqEAPNSYfAuPkjPChYLiEM64TnS6f7q",
-				Data:      "ECDSA is the most fun I have ever experienced",
+				Data:      Message,
 				Signature: []byte("HxsPQKwkQF5VWA/iEt1cszOIFJFUNqAmIZW5PRaDGWSYIQFD/sPwtqCozKd87CzrQ9huLmgtjdcLnJwpez3uhwc=")},
 		},
 		{
 			name:          "sign message deterministically with nested segwit address",
 			privKey:       NewStr("L1ztTW19cLchYbbtt9bCdyBbNZTg1GScf8NRVH1ovxpfiqUBrhKM"),
 			addrType:      "nested",
-			message:       "ECDSA is the most fun I have ever experienced",
+			message:       Message,
 			deterministic: true,
 			electrum:      false,
 			expected: &BitcoinMessage{
 				Address:   "3C7MT5Tt3HM8ZF6T14yVsbRFtiBkY1fCZS",
-				Data:      "ECDSA is the most fun I have ever experienced",
+				Data:      Message,
 				Signature: []byte("IwxiTLdDP2UwA/ST1hHo3QErhmkM4+epqAs4HLESVvigaak0gJqlU+B3oB4vxsMluKosDr1NW8ZJMA4USmwUMr0=")},
 		},
 		{
 			name:          "sign message deterministically with segwit address",
 			privKey:       NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
 			addrType:      "segwit",
-			message:       "ECDSA is the most fun I have ever experienced",
+			message:       Message,
 			deterministic: true,
 			electrum:      false,
 			expected: &BitcoinMessage{
 				Address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
-				Data:      "ECDSA is the most fun I have ever experienced",
+				Data:      Message,
 				Signature: []byte("JwGZV037XaS2TOWPJ1daKxOOsn6K4nN9LuDP/gTGr7Fkebu55Lg1pX92A1TivTLoY0/ZVAvAju6Epqoc/5mY5og=")},
 		},
 		{
-			name:     "sign fancy message deterministically with segwit address",
-			privKey:  NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
-			addrType: "segwit",
-			message: `ECDSA is the most fun I have ever experienced
-
-🖐 😀😃😄😁😆😅😂🤣🥲🥹☺️😊😇🙂🙃😉😌😍🥰😘😗😙😚😋
-
-👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
-
-👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ`,
+			name:          "sign fancy message deterministically with segwit address",
+			privKey:       NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
+			addrType:      "segwit",
+			message:       FancyMessage,
 			deterministic: true,
 			electrum:      false,
 			expected: &BitcoinMessage{
-				Address: "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
-				Data: `ECDSA is the most fun I have ever experienced
-
-🖐 😀😃😄😁😆😅😂🤣🥲🥹☺️😊😇🙂🙃😉😌😍🥰😘😗😙😚😋
-
-👧🧒👦👩🧑👨👩‍🦱🧑‍🦱
-
-👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ`,
-				Signature: []byte("JyuK4LW99LnBBoun2LnAO20ROP7BAfpW8GoN9fyBh9ICbEoYSY9uF9yrRvTTk/QBW5WZhlPZCih4yN3KVJbEggg=")},
+				Address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
+				Data:      FancyMessage,
+				Signature: []byte("J3RLthJCqVY5DETEpDLkep92et9dXuntiTWCxwF/lYRPa9mACkdJzT6iCq3qHox4pu9AwNR148mxs2nAqzmAcls=")},
 		},
 		{
 			name:          "sign message deterministically with segwit address using electrum standard",
 			privKey:       NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
 			addrType:      "segwit",
-			message:       "ECDSA is the most fun I have ever experienced",
+			message:       Message,
 			deterministic: true,
 			electrum:      true,
 			expected: &BitcoinMessage{
 				Address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
-				Data:      "ECDSA is the most fun I have ever experienced",
+				Data:      Message,
 				Signature: []byte("HwGZV037XaS2TOWPJ1daKxOOsn6K4nN9LuDP/gTGr7Fkebu55Lg1pX92A1TivTLoY0/ZVAvAju6Epqoc/5mY5og=")},
 		},
 	}
@@ -547,6 +535,212 @@ func TestSignMessage(t *testing.T) {
 		t.Run(testcase.name, func(t *testing.T) {
 			pk, _ := NewPrivateKey(nil, testcase.privKey)
 			actual, err := SignMessage(pk, testcase.addrType, testcase.message, testcase.deterministic, testcase.electrum)
+			require.NoError(t, err)
+			require.Equal(t, testcase.expected, actual)
+		})
+	}
+}
+
+func TestSignMessageNonDeterministic(t *testing.T) {
+	var testcases = []struct {
+		name          string
+		privKey       *string
+		addrType      string
+		message       string
+		deterministic bool
+		electrum      bool
+		expected      string
+	}{
+		{
+			name:          "sign message non deterministically with legacy address",
+			privKey:       NewStr("Ky89h1iA6vwjpD4yUaJJ3ZXnXm5iCRPpNWY4LiDJZmtU9bvQoXqb"),
+			addrType:      "legacy",
+			message:       Message,
+			deterministic: false,
+			electrum:      false,
+			expected:      "133XqEAPNSYfAuPkjPChYLiEM64TnS6f7q",
+		},
+		{
+			name:          "sign message non deterministically with nested segwit address",
+			privKey:       NewStr("L1ztTW19cLchYbbtt9bCdyBbNZTg1GScf8NRVH1ovxpfiqUBrhKM"),
+			addrType:      "nested",
+			message:       Message,
+			deterministic: false,
+			electrum:      false,
+			expected:      "3C7MT5Tt3HM8ZF6T14yVsbRFtiBkY1fCZS",
+		},
+		{
+			name:          "sign message non deterministically with segwit address",
+			privKey:       NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
+			addrType:      "segwit",
+			message:       Message,
+			deterministic: false,
+			electrum:      false,
+			expected:      "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
+		},
+		{
+			name:          "sign message non deterministically with uncompressed private key",
+			privKey:       NewStr("5JycBec74raFLLUKJqD21cJMcTQyftgj9qjwFRxaf4NALEKqnSU"),
+			addrType:      "legacy",
+			message:       Message,
+			deterministic: false,
+			electrum:      false,
+			expected:      "14f7r88uvzs6XKkQVUBGP7baxt88eig4f1",
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			pk, _ := NewPrivateKey(nil, testcase.privKey)
+			actual, err := SignMessage(pk, testcase.addrType, testcase.message, testcase.deterministic, testcase.electrum)
+			require.NoError(t, err)
+			require.Equal(t, testcase.expected, actual.Address)
+		})
+	}
+}
+
+func TestSignMessageErr(t *testing.T) {
+	var testcases = []struct {
+		name          string
+		privKey       *string
+		addrType      string
+		message       string
+		deterministic bool
+		electrum      bool
+		errMsg        string
+	}{
+		{
+			name:          "sign message with uncompressed private key and nested segwit address",
+			privKey:       NewStr("5JycBec74raFLLUKJqD21cJMcTQyftgj9qjwFRxaf4NALEKqnSU"),
+			addrType:      "nested",
+			message:       Message,
+			deterministic: false,
+			electrum:      false,
+			errMsg:        "invalid address type",
+		},
+		{
+			name:          "sign message with uncompressed private key and native segwit address",
+			privKey:       NewStr("5JycBec74raFLLUKJqD21cJMcTQyftgj9qjwFRxaf4NALEKqnSU"),
+			addrType:      "segwit",
+			message:       Message,
+			deterministic: false,
+			electrum:      false,
+			errMsg:        "invalid address type",
+		},
+		{
+			name:          "sign message with non existent address type",
+			privKey:       NewStr("L41eiqRxJBq4AMzcy49c95gjAtMEHxzV89s6NSY5Nt2R6veJYy36"),
+			addrType:      "test",
+			message:       Message,
+			deterministic: false,
+			electrum:      false,
+			errMsg:        "invalid address type",
+		},
+	}
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			pk, _ := NewPrivateKey(nil, testcase.privKey)
+			_, err := SignMessage(pk, testcase.addrType, testcase.message, testcase.deterministic, testcase.electrum)
+			require.EqualError(t, err, testcase.errMsg)
+		})
+	}
+}
+
+func TestVerifyMessage(t *testing.T) {
+	var testcases = []struct {
+		name     string
+		message  *BitcoinMessage
+		electrum bool
+		expected *VerifyMessageResult
+	}{
+		{
+			name: "verify message with legacy address",
+			message: &BitcoinMessage{
+				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				Data:      Message,
+				Signature: []byte("IEM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
+			electrum: false,
+			expected: &VerifyMessageResult{
+				Verified: true,
+				PubKey:   "03dee05815b94b373572b62be33adaaec4738b4d0a03107d0972d753b2bc64ff0e",
+				Message:  "message verified to be from 1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao"},
+		},
+		{
+			name: "verify message with nested segwit address",
+			message: &BitcoinMessage{
+				Address:   "34SXqp4aYmxY46nR68W5tTpD6YEHp1FKGv",
+				Data:      Message,
+				Signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
+			electrum: false,
+			expected: &VerifyMessageResult{
+				Verified: true,
+				PubKey:   "031987d146b3715ee3cd3fd0d75251ea5055f719fdd26e241f75be8b74e91a460b",
+				Message:  "message verified to be from 34SXqp4aYmxY46nR68W5tTpD6YEHp1FKGv"},
+		},
+		{
+			name: "verify message with segwit address",
+			message: &BitcoinMessage{
+				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				Data:      Message,
+				Signature: []byte("J1Pgcc6VOqkcNNeiQHwjcnoYixiCM29cXUvuP6rhG338XSuaRsJpV419nbWQzpX+aVLWZZ8j/HGW6Cud3eEg+3A=")},
+			electrum: false,
+			expected: &VerifyMessageResult{
+				Verified: true,
+				PubKey:   "024203f00993564099add23e0309020cdba7f33641690530b483e1bbee53f0b3b0",
+				Message:  "message verified to be from bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t"},
+		},
+		{
+			name: "verify message with segwit address and electrum standard",
+			message: &BitcoinMessage{
+				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				Data:      Message,
+				Signature: []byte("H1Pgcc6VOqkcNNeiQHwjcnoYixiCM29cXUvuP6rhG338XSuaRsJpV419nbWQzpX+aVLWZZ8j/HGW6Cud3eEg+3A=")},
+			electrum: true,
+			expected: &VerifyMessageResult{
+				Verified: true,
+				PubKey:   "024203f00993564099add23e0309020cdba7f33641690530b483e1bbee53f0b3b0",
+				Message:  "message verified to be from bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t"},
+		},
+		{
+			name: "verify fancy message with segwit address",
+			message: &BitcoinMessage{
+				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				Data:      FancyMessage,
+				Signature: []byte("KHwAJ0Nmy0NCXm1mZj/S58QDfyuODZg6iSPQjSI9JBlsRAEKaJIJb5cH7s7NcPmX3tWiYTs/6lupP0/uCP2b344=")},
+			electrum: false,
+			expected: &VerifyMessageResult{
+				Verified: true,
+				PubKey:   "024203f00993564099add23e0309020cdba7f33641690530b483e1bbee53f0b3b0",
+				Message:  "message verified to be from bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t"},
+		},
+		{
+			name: "verify message with segwit address and wrong signature",
+			message: &BitcoinMessage{
+				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				Data:      Message,
+				Signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
+			electrum: false,
+			expected: &VerifyMessageResult{
+				Verified: false,
+				PubKey:   "031987d146b3715ee3cd3fd0d75251ea5055f719fdd26e241f75be8b74e91a460b",
+				Message:  "message failed to verify"},
+		},
+		{
+			name: "verify message with segwit address and wrong signature and electrum standard",
+			message: &BitcoinMessage{
+				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				Data:      Message,
+				Signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
+			electrum: true,
+			expected: &VerifyMessageResult{
+				Verified: false,
+				PubKey:   "031987d146b3715ee3cd3fd0d75251ea5055f719fdd26e241f75be8b74e91a460b",
+				Message:  "message failed to verify"},
+		},
+	}
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			actual, err := VerifyMessage(testcase.message, testcase.electrum)
 			require.NoError(t, err)
 			require.Equal(t, testcase.expected, actual)
 		})

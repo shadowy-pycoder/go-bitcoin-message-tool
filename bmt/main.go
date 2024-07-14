@@ -464,6 +464,12 @@ type BitcoinMessage struct {
 	Signature []byte
 }
 
+type VerifyMessageResult struct {
+	Verified bool
+	PubKey   string
+	Message  string
+}
+
 type PrivateKey struct {
 	Raw          *big.Int
 	Wif          *string
@@ -515,7 +521,7 @@ func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
 			return nil, err
 		}
 		if !ValidKey(pk.Raw) {
-			return nil, OutOfRangeError
+			panic(OutOfRangeError)
 		}
 		pk.Uncompressed = false
 		encoded, _ := pk.ToWif(pk.Uncompressed)
@@ -624,7 +630,7 @@ func CreateNewWallet(raw *big.Int, wif *string) (*Wallet, error) {
 	}
 	rawPubKey, err := createRawPubKey(privKey.Raw)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	pubKey := createPubKey(rawPubKey, privKey.Uncompressed)
 	legacyAddress := createAddress(pubKey)
@@ -1156,11 +1162,9 @@ func splitSignature(sig []byte) (header byte, r, s *big.Int) {
 //   - electrum: a flag indicating whether to use the electrum signature format.
 //
 // Returns:
-//   - bool: true if the message is verified, false otherwise.
-//   - string: the hex-encoded public key.
-//   - string: a message indicating whether the message was verified or not.
+//   - a pointer to a VerifyMessageResult struct containing the verification result and the hex-encoded public key.
 //   - error: an error if any occurred during the verification process.
-func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubkey string, result string, err error) {
+func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult, error) {
 	var (
 		x, y, alpha, beta, bt, z, e big.Int
 		p, q, Q, pk                 JacobianPoint
@@ -1168,21 +1172,21 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubke
 	dSig := make([]byte, base64.StdEncoding.DecodedLen(len(message.Signature)))
 	n, err := base64.StdEncoding.Decode(dSig, message.Signature)
 	if err != nil {
-		return false, "", "", &SignatureError{Message: "decode error", Err: err}
+		return nil, &SignatureError{Message: "decode error", Err: err}
 	}
 	if n != 65 {
-		return false, "", "", &SignatureError{Message: "signature must be 65 bytes long"}
+		return nil, &SignatureError{Message: "signature must be 65 bytes long"}
 	}
 
 	header, r, s := splitSignature(dSig[:n])
 	if header < 27 || header > 46 {
-		return false, "", "", &SignatureError{Message: "header byte out of range"}
+		return nil, &SignatureError{Message: "header byte out of range"}
 	}
 	if r.Cmp(Secp256k1.NCurve) >= 0 || r.Cmp(zero) == 0 {
-		return false, "", "", &SignatureError{Message: "r-value out of range"}
+		return nil, &SignatureError{Message: "r-value out of range"}
 	}
 	if s.Cmp(Secp256k1.NCurve) >= 0 || s.Cmp(zero) == 0 {
-		return false, "", "", &SignatureError{Message: "s-value out of range"}
+		return nil, &SignatureError{Message: "s-value out of range"}
 	}
 	uncompressed := false
 	addrType := "legacy"
@@ -1221,25 +1225,37 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (verified bool, pubke
 		for _, addrType := range addressTypes {
 			addr, _, err := deriveAddress(pubKey, addrType)
 			if err != nil {
-				return false, "", "", err
+				return nil, err
 			}
 			if addr == message.Address {
-				return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", message.Address), nil
+				return &VerifyMessageResult{
+					Verified: true,
+					PubKey:   hex.EncodeToString(pubKey),
+					Message:  fmt.Sprintf("message verified to be from %s", message.Address)}, nil
 			}
 		}
-		return false, hex.EncodeToString(pubKey), fmt.Sprintln("message failed to verify"), nil
+		return &VerifyMessageResult{
+			Verified: false,
+			PubKey:   hex.EncodeToString(pubKey),
+			Message:  "message failed to verify"}, nil
 	}
 	if addrType == "" {
-		return false, "", "", &SignatureError{Message: "unknown address type"}
+		return nil, &SignatureError{Message: "unknown address type"}
 	}
 	addr, _, err := deriveAddress(pubKey, addrType)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	if addr == message.Address {
-		return true, hex.EncodeToString(pubKey), fmt.Sprintf("message verified to be from %s", message.Address), nil
+		return &VerifyMessageResult{
+			Verified: true,
+			PubKey:   hex.EncodeToString(pubKey),
+			Message:  fmt.Sprintf("message verified to be from %s", message.Address)}, nil
 	}
-	return false, hex.EncodeToString(pubKey), fmt.Sprintln("message failed to verify"), nil
+	return &VerifyMessageResult{
+		Verified: false,
+		PubKey:   hex.EncodeToString(pubKey),
+		Message:  "message failed to verify"}, nil
 }
 
 // SignMessage generates a Bitcoin message signature using the provided private key, address type, message,
@@ -1269,7 +1285,7 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 	msg.SetBytes(DoubleSHA256(mBytes))
 	rawPubKey, err := createRawPubKey(pk.Raw)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	pubKey := createPubKey(rawPubKey, pk.Uncompressed)
 	if !deterministic {
@@ -1298,11 +1314,11 @@ func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electr
 		signedMessage.Address = address
 		signedMessage.Data = message
 		signedMessage.Signature = signature
-		verified, _, _, err := VerifyMessage(&signedMessage, electrum)
+		result, err := VerifyMessage(&signedMessage, electrum)
 		if err != nil {
 			return nil, err
 		}
-		if verified {
+		if result.Verified {
 			return &signedMessage, nil
 		}
 	}
@@ -1571,16 +1587,16 @@ func (vc *cmdVerify) Run() error {
 			}
 		}
 	}
-	verified, pubkey, result, err := VerifyMessage(vc.message, vc.electrum)
+	result, err := VerifyMessage(vc.message, vc.electrum)
 	if err != nil {
 		return fmt.Errorf("bmt: failed verifying message: %w", err)
 	}
-	fmt.Println(verified)
+	fmt.Println(result.Verified)
 	if vc.verbose {
-		fmt.Println(result)
+		fmt.Println(result.Message)
 	}
 	if vc.recpub {
-		fmt.Println(pubkey)
+		fmt.Println(result.PubKey)
 	}
 	return nil
 }
