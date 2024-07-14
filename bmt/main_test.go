@@ -746,3 +746,73 @@ func TestVerifyMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyMessageErr(t *testing.T) {
+	var testcases = []struct {
+		name     string
+		message  *BitcoinMessage
+		electrum bool
+		errMsg   string
+	}{
+		{
+			name: "signature decode error",
+			message: &BitcoinMessage{
+				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				Data:      Message,
+				Signature: []byte("tests")},
+			electrum: false,
+			errMsg:   "decode error",
+		},
+		{
+			name: "signature is too short",
+			message: &BitcoinMessage{
+				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				Data:      Message,
+				Signature: []byte("test")},
+			electrum: false,
+			errMsg:   "signature must be 65 bytes long",
+		},
+		{
+			name: "signature has an unsupported header",
+			message: &BitcoinMessage{
+				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				Data:      Message,
+				Signature: []byte("LwM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
+			electrum: false,
+			errMsg:   "header byte out of range",
+		},
+		{
+			name: "signature r-value is out of range",
+			message: &BitcoinMessage{
+				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				Data:      Message,
+				Signature: []byte("IgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")},
+			electrum: false,
+			errMsg:   "r-value out of range",
+		},
+		{
+			name: "signature s-value is out of range",
+			message: &BitcoinMessage{
+				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				Data:      Message,
+				Signature: []byte("IgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")},
+			electrum: false,
+			errMsg:   "s-value out of range",
+		},
+		{
+			name: "signature has a header of Taproot address type",
+			message: &BitcoinMessage{
+				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				Data:      Message,
+				Signature: []byte("LgM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
+			electrum: false,
+			errMsg:   "unknown address type",
+		},
+	}
+	for _, testcase := range testcases {
+		t.Run(testcase.name, func(t *testing.T) {
+			_, err := VerifyMessage(testcase.message, testcase.electrum)
+			require.EqualError(t, err, testcase.errMsg)
+		})
+	}
+}
