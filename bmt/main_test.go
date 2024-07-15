@@ -39,32 +39,6 @@ func testTempFile(b *testing.B) (string, func()) {
 	return tf.Name(), func() { os.Remove(tf.Name()) }
 }
 
-// NewInt converts a hexadecimal string to a big.Int pointer.
-//
-// Parameters:
-//   - s: a string representing a hexadecimal number.
-//
-// Returns:
-//   - *big.Int: a pointer to a big.Int representing the converted number.
-func NewInt(s string) *big.Int {
-	num, err := new(big.Int).SetString(s, 16)
-	if !err {
-		os.Exit(1)
-	}
-	return num
-}
-
-// NewStr returns a pointer to the input string.
-//
-// Parameters:
-//   - s: a string.
-//
-// Returns:
-//   - *string: a pointer to the input string.
-func NewStr(s string) *string {
-	return &s
-}
-
 // BenchmarkCreateWallets is a benchmark function that measures the performance of the CreateWallets function.
 //
 // Parameters:

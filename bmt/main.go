@@ -20,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/golangcrypto/ripemd160"
@@ -29,22 +28,22 @@ import (
 )
 
 var (
-	zero         = big.NewInt(0)
-	one          = big.NewInt(1)
-	two          = big.NewInt(2)
-	three        = big.NewInt(3)
-	four         = big.NewInt(4)
-	eight        = big.NewInt(8)
-	pCurve, _    = new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F", 16)
-	nCurve, _    = new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16)
-	aCurve       = zero
-	bCurve       = big.NewInt(7)
-	genPointX, _ = new(big.Int).SetString("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798", 16)
-	genPointY, _ = new(big.Int).SetString("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8", 16)
-	pow256       big.Int
-	pow256M1     = pow256.Exp(two, big.NewInt(256), nil).Sub(&pow256, one)
-	precomputes  = getPrecomputes()
-	Secp256k1    = secp256k1{
+	zero        = big.NewInt(0)
+	one         = big.NewInt(1)
+	two         = big.NewInt(2)
+	three       = big.NewInt(3)
+	four        = big.NewInt(4)
+	eight       = big.NewInt(8)
+	pCurve      = NewInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F")
+	nCurve      = NewInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
+	aCurve      = zero
+	bCurve      = big.NewInt(7)
+	genPointX   = NewInt("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798")
+	genPointY   = NewInt("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8")
+	pow256      big.Int
+	pow256M1    = pow256.Exp(two, big.NewInt(256), nil).Sub(&pow256, one)
+	precomputes = getPrecomputes()
+	Secp256k1   = secp256k1{
 		PCurve:   pCurve,
 		NCurve:   nCurve,
 		ACurve:   aCurve,
@@ -672,6 +671,32 @@ Legacy Address: %s
 Nested SegWit Address: %s
 Native SegWit Address: %s
 `, w.PrivKey.Raw, *w.PrivKey.Wif, w.RawPubKey, w.PubKey, w.Legacy, w.Nested, w.Native)
+}
+
+// NewInt converts a hexadecimal string to a big.Int pointer.
+//
+// Parameters:
+//   - s: a string representing a hexadecimal number.
+//
+// Returns:
+//   - *big.Int: a pointer to a big.Int representing the converted number.
+func NewInt(s string) *big.Int {
+	num, ok := new(big.Int).SetString(s, 16)
+	if !ok {
+		panic("failed creating number from hex")
+	}
+	return num
+}
+
+// NewStr returns a pointer to the input string.
+//
+// Parameters:
+//   - s: a string.
+//
+// Returns:
+//   - *string: a pointer to the input string.
+func NewStr(s string) *string {
+	return &s
 }
 
 // ValidKey checks if the given big.Int scalar is a valid key.
@@ -1438,7 +1463,7 @@ func newCmdSign() *cmdSign {
 	sc.fs.BoolFunc("p", "private key in wallet import format (WIF)", func(flagValue string) error {
 		fmt.Print("PrivateKey (WIF): ")
 
-		bytepw, err := term.ReadPassword(syscall.Stdin)
+		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
 		if err != nil {
 			os.Exit(1)
 		}
