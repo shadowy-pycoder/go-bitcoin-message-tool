@@ -28,40 +28,8 @@ import (
 )
 
 var (
-	zero        = big.NewInt(0)
-	one         = big.NewInt(1)
-	two         = big.NewInt(2)
-	three       = big.NewInt(3)
-	four        = big.NewInt(4)
-	eight       = big.NewInt(8)
-	pCurve      = NewInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F")
-	nCurve      = NewInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
-	aCurve      = zero
-	bCurve      = big.NewInt(7)
-	genPointX   = NewInt("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798")
-	genPointY   = NewInt("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8")
-	pow256      big.Int
-	pow256M1    = pow256.Exp(two, big.NewInt(256), nil).Sub(&pow256, one)
-	precomputes = getPrecomputes()
-	Secp256k1   = secp256k1{
-		PCurve:   pCurve,
-		NCurve:   nCurve,
-		ACurve:   aCurve,
-		BCurve:   bCurve,
-		GenPoint: NewJacobianPoint(genPointX, genPointY, one),
-	}
-	IdentityPoint = NewJacobianPoint(pCurve, zero, one)
-	addressTypes  = []string{"legacy", "nested", "segwit"}
-	headers       = [5][4]byte{
-		{0x1b, 0x1c, 0x1d, 0x1e}, // 27 - 30 P2PKH uncompressed
-		{0x1f, 0x20, 0x21, 0x22}, // 31 - 34 P2PKH compressed
-		{0x23, 0x24, 0x25, 0x26}, // 35 - 38 P2WPKH-P2SH compressed (BIP-137)
-		{0x27, 0x28, 0x29, 0x2a}, // 39 - 42 P2WPKH compressed (BIP-137)
-		{0x2b, 0x2c, 0x2d, 0x2e}, // TODO 43 - 46 P2TR
-	}
-	OutOfRangeError = &PrivateKeyError{Message: "scalar is out of range"}
-	flags           = flag.NewFlagSet("bitcoin message tool", flag.ExitOnError)
-	usagePrefix     = `
+	flags       = flag.NewFlagSet("bitcoin message tool", flag.ExitOnError)
+	usagePrefix = `
 ██████╗ ███╗   ███╗████████╗
 ██╔══██╗████╗ ████║╚══██╔══╝
 ██████╔╝██╔████╔██║   ██║   
@@ -164,6 +132,39 @@ Native SegWit Address: bc1qum0at29ayuq2ndk39z4zwf4zdpxv5ker570ape
 	beginSignedMessage = "-----BEGIN BITCOIN SIGNED MESSAGE-----"
 	beginSignature     = "-----BEGIN BITCOIN SIGNATURE-----"
 	endSignature       = "-----END BITCOIN SIGNATURE-----"
+	zero               = big.NewInt(0)
+	one                = big.NewInt(1)
+	two                = big.NewInt(2)
+	three              = big.NewInt(3)
+	four               = big.NewInt(4)
+	eight              = big.NewInt(8)
+	pCurve             = NewInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F")
+	nCurve             = NewInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
+	aCurve             = zero
+	bCurve             = big.NewInt(7)
+	genPointX          = NewInt("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798")
+	genPointY          = NewInt("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8")
+	genPoint           = NewJacobianPoint(genPointX, genPointY, one)
+	pow256             big.Int
+	pow256M1           = pow256.Exp(two, big.NewInt(256), nil).Sub(&pow256, one)
+	precomputes        = getPrecomputes()
+	Secp256k1          = secp256k1{
+		PCurve:   pCurve,
+		NCurve:   nCurve,
+		ACurve:   aCurve,
+		BCurve:   bCurve,
+		GenPoint: genPoint,
+	}
+	IdentityPoint = NewJacobianPoint(pCurve, zero, one)
+	addressTypes  = []string{"legacy", "nested", "segwit"}
+	headers       = [5][4]byte{
+		{0x1b, 0x1c, 0x1d, 0x1e}, // 27 - 30 P2PKH uncompressed
+		{0x1f, 0x20, 0x21, 0x22}, // 31 - 34 P2PKH compressed
+		{0x23, 0x24, 0x25, 0x26}, // 35 - 38 P2WPKH-P2SH compressed (BIP-137)
+		{0x27, 0x28, 0x29, 0x2a}, // 39 - 42 P2WPKH compressed (BIP-137)
+		{0x2b, 0x2c, 0x2d, 0x2e}, // TODO 43 - 46 P2TR
+	}
+	OutOfRangeError = &PrivateKeyError{Message: "scalar is out of range"}
 )
 
 type PrivateKeyError struct {
@@ -243,7 +244,7 @@ func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
 		return pt
 	}
 	Y2.Mul(p.Y, p.Y)
-	S.Mul(four, p.X).Mul(&S, &Y2).Mod(&S, Secp256k1.PCurve)
+	S.Mul(four, p.X).Mul(&S, &Y2)
 	M.Mul(three, p.X).Mul(&M, p.X)
 	x.Mul(&M, &M).Sub(&x, tx.Mul(two, &S)).Mod(&x, Secp256k1.PCurve)
 	y.Mul(&M, ty.Sub(&S, &x)).Sub(&y, ty.Mul(&Y2, &Y2).Mul(&ty, eight)).Mod(&y, Secp256k1.PCurve)
@@ -288,7 +289,6 @@ func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 	U2.Mul(q.X, &PZ2).Mod(&U2, Secp256k1.PCurve)
 	S1.Mul(p.Y, &QZ2).Mul(&S1, q.Z).Mod(&S1, Secp256k1.PCurve)
 	S2.Mul(q.Y, &PZ2).Mul(&S2, p.Z).Mod(&S2, Secp256k1.PCurve)
-
 	if U1.Cmp(&U2) == 0 {
 		if S1.Cmp(&S2) == 0 {
 			return pt.Dbl(p)
@@ -300,10 +300,10 @@ func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 		}
 
 	}
-	H.Sub(&U2, &U1).Mod(&H, Secp256k1.PCurve)
-	R.Sub(&S2, &S1).Mod(&R, Secp256k1.PCurve)
-	H2.Mul(&H, &H).Mod(&H2, Secp256k1.PCurve)
-	H3.Mul(&H2, &H).Mod(&H3, Secp256k1.PCurve)
+	H.Sub(&U2, &U1)
+	R.Sub(&S2, &S1)
+	H2.Mul(&H, &H)
+	H3.Mul(&H2, &H)
 	x.Mul(&R, &R).Sub(&x, &H3).Sub(&x, tx.Mul(two, &U1).Mul(&tx, &H2)).Mod(&x, Secp256k1.PCurve)
 	y.Mul(&R, y.Mul(&U1, &H2).Sub(&y, &x)).Sub(&y, ty.Mul(&S1, &H3)).Mod(&y, Secp256k1.PCurve)
 	z.Mul(&H, p.Z).Mul(&z, q.Z).Mod(&z, Secp256k1.PCurve)
@@ -376,11 +376,11 @@ func (pt *JacobianPoint) ToAffine() *Point {
 	if pt.X.Cmp(Secp256k1.PCurve) == 0 {
 		return &Point{X: new(big.Int).Set(IdentityPoint.X), Y: new(big.Int).Set(IdentityPoint.Y)}
 	}
-	var x, y big.Int
+	var x, y, invZ2 big.Int
 	invZ := ModInverse(pt.Z, Secp256k1.PCurve)
-	invZ2 := new(big.Int).Exp(invZ, two, nil)
-	x.Mul(pt.X, invZ2).Mod(&x, Secp256k1.PCurve)
-	y.Mul(pt.Y, invZ2).Mul(&y, invZ).Mod(&y, Secp256k1.PCurve)
+	invZ2.Mul(invZ, invZ)
+	x.Mul(pt.X, &invZ2).Mod(&x, Secp256k1.PCurve)
+	y.Mul(pt.Y, &invZ2).Mul(&y, invZ).Mod(&y, Secp256k1.PCurve)
 	return &Point{X: &x, Y: &y}
 }
 
@@ -440,7 +440,7 @@ func (pt *Point) Valid() bool {
 	}
 	var r1, r2 big.Int
 	r1.Exp(pt.X, three, nil).Add(&r1, Secp256k1.BCurve).Mod(&r1, Secp256k1.PCurve)
-	r2.Exp(pt.Y, two, nil).Mod(&r2, Secp256k1.PCurve)
+	r2.Exp(pt.Y, two, Secp256k1.PCurve)
 	return r1.Cmp(&r2) == 0
 }
 
@@ -666,7 +666,7 @@ func (w *Wallet) String() string {
 	return fmt.Sprintf(`Private Key (Raw): %s
 Private Key (WIF): %s
 Public Key (Raw): %s
-Public Key (HEX Copmpressed): %s
+Public Key (HEX Compressed): %s
 Legacy Address: %s
 Nested SegWit Address: %s
 Native SegWit Address: %s
