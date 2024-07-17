@@ -622,7 +622,7 @@ func (k *PrivateKey) ToWif(uncompressed bool) (*string, error) {
 //
 // If both parameters are nil generates a random wallet
 func CreateNewWallet(raw *big.Int, wif *string) (*Wallet, error) {
-	var nestedAddress, nativeAddress string
+	var nestedAddress, nativeAddress, taprootAddress string
 	privKey, err := NewPrivateKey(raw, wif)
 	if err != nil {
 		return nil, err
@@ -636,13 +636,15 @@ func CreateNewWallet(raw *big.Int, wif *string) (*Wallet, error) {
 	if !privKey.Uncompressed {
 		nestedAddress = createNestedSegwit(pubKey)
 		nativeAddress = createNativeSegwit(pubKey)
+		taprootAddress = createTaproot(createTweakedPubKey(rawPubKey))
 	}
 	return &Wallet{PrivKey: privKey,
 		RawPubKey: rawPubKey,
 		PubKey:    hex.EncodeToString(pubKey),
 		Legacy:    legacyAddress,
 		Nested:    nestedAddress,
-		Native:    nativeAddress}, nil
+		Native:    nativeAddress,
+		Taproot:   taprootAddress}, nil
 }
 
 type Wallet struct {
@@ -652,6 +654,7 @@ type Wallet struct {
 	Legacy    string
 	Nested    string
 	Native    string
+	Taproot   string
 }
 
 // String returns a formatted string representation of the Wallet.
@@ -670,7 +673,8 @@ Public Key (HEX Compressed): %s
 Legacy Address: %s
 Nested SegWit Address: %s
 Native SegWit Address: %s
-`, w.PrivKey.Raw, *w.PrivKey.Wif, w.RawPubKey, w.PubKey, w.Legacy, w.Nested, w.Native)
+Taproot Address: %s
+`, w.PrivKey.Raw, *w.PrivKey.Wif, w.RawPubKey, w.PubKey, w.Legacy, w.Nested, w.Native, w.Taproot)
 }
 
 // NewInt converts a hexadecimal string to a big.Int pointer.
@@ -832,6 +836,32 @@ func createPubKey(rawPubKey *Point, uncompressed bool) []byte {
 	return buf[:33]
 }
 
+func calculateTweak(rawPubKey *Point) *big.Int {
+	var tweak big.Int
+	buf := make([]byte, 32)
+	h1 := sha256.New()
+	h2 := sha256.New()
+	h1.Write([]byte("TapTweak"))
+	h2.Write(joinBytes([][]byte{h1.Sum(nil), h1.Sum(nil), rawPubKey.X.FillBytes(buf)}...))
+	tweak.SetBytes(h2.Sum(nil))
+	return &tweak
+}
+
+func createTweakedPubKey(rawPubKey *Point) []byte {
+	var q JacobianPoint
+	tweak := calculateTweak(rawPubKey)
+	p := &Point{X: new(big.Int).Set(rawPubKey.X), Y: new(big.Int).Set(rawPubKey.Y)}
+	if IsOdd(p.Y) {
+		p.Y.Sub(Secp256k1.PCurve, p.Y)
+	}
+	q.Add(p.ToJacobian(), q.Mul(tweak, nil))
+	qa := q.ToAffine()
+	if IsOdd(qa.Y) {
+		qa.Y.Sub(Secp256k1.PCurve, qa.Y)
+	}
+	return createPubKey(qa, false)[1:]
+}
+
 // checkSum calculates the checksum of the input byte slice using DoubleSHA256 and returns the first 4 bytes.
 //
 // Parameters:
@@ -887,6 +917,21 @@ func createNativeSegwit(pubKey []byte) string {
 	combined[0] = byte(0)
 	copy(combined[1:], converted)
 	addr, err := bech32.Encode("bc", combined)
+	if err != nil {
+		panic(err)
+	}
+	return addr
+}
+
+func createTaproot(pubKey []byte) string {
+	converted, err := bech32.ConvertBits(pubKey, 8, 5, true)
+	if err != nil {
+		panic(err)
+	}
+	combined := make([]byte, len(converted)+1)
+	combined[0] = byte(1)
+	copy(combined[1:], converted)
+	addr, err := bech32.EncodeM("bc", combined)
 	if err != nil {
 		panic(err)
 	}
