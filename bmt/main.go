@@ -238,9 +238,9 @@ func (pt *JacobianPoint) Eq(q *JacobianPoint) bool {
 func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
 	var Y2, S, M, x, y, z, tx, ty big.Int
 	if p.X.Cmp(Secp256k1.PCurve) == 0 {
-		pt.X = new(big.Int).Set(p.X)
-		pt.Y = new(big.Int).Set(p.Y)
-		pt.Z = new(big.Int).Set(p.Z)
+		pt.X = x.Set(p.X)
+		pt.Y = y.Set(p.Y)
+		pt.Z = z.Set(p.Z)
 		return pt
 	}
 	Y2.Mul(p.Y, p.Y)
@@ -272,15 +272,15 @@ func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
 func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 	var PZ2, QZ2, U1, U2, S1, S2, H, R, H2, H3, x, tx, y, ty, z big.Int
 	if p.X.Cmp(Secp256k1.PCurve) == 0 {
-		pt.X = new(big.Int).Set(q.X)
-		pt.Y = new(big.Int).Set(q.Y)
-		pt.Z = new(big.Int).Set(q.Z)
+		pt.X = x.Set(q.X)
+		pt.Y = y.Set(q.Y)
+		pt.Z = z.Set(q.Z)
 		return pt
 	}
 	if q.X.Cmp(Secp256k1.PCurve) == 0 {
-		pt.X = new(big.Int).Set(p.X)
-		pt.Y = new(big.Int).Set(p.Y)
-		pt.Z = new(big.Int).Set(p.Z)
+		pt.X = x.Set(p.X)
+		pt.Y = y.Set(p.Y)
+		pt.Z = z.Set(p.Z)
 		return pt
 	}
 	PZ2.Mul(p.Z, p.Z)
@@ -293,9 +293,9 @@ func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 		if S1.Cmp(&S2) == 0 {
 			return pt.Dbl(p)
 		} else {
-			pt.X = new(big.Int).Set(IdentityPoint.X)
-			pt.Y = new(big.Int).Set(IdentityPoint.Y)
-			pt.Z = new(big.Int).Set(IdentityPoint.Z)
+			pt.X = x.Set(IdentityPoint.X)
+			pt.Y = y.Set(IdentityPoint.Y)
+			pt.Z = z.Set(IdentityPoint.Z)
 			return pt
 		}
 
@@ -1512,8 +1512,7 @@ func newCmdSign() *cmdSign {
 		if err != nil {
 			os.Exit(1)
 		}
-		pk := string(bytepw)
-		sc.pk = pk
+		sc.pk = string(bytepw)
 		fmt.Println()
 		return nil
 	})
