@@ -62,6 +62,8 @@ func BenchmarkCreateWallets(b *testing.B) {
 // Return:
 //   - None.
 func TestCreateNewWalletFromRawPrivateKey(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name     string
 		privKey  *big.Int
@@ -125,6 +127,8 @@ func TestCreateNewWalletFromRawPrivateKey(t *testing.T) {
 // Return:
 //   - None.
 func TestCreateNewWalletFromWifPrivateKey(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name     string
 		privKey  *string
@@ -181,6 +185,8 @@ func TestCreateNewWalletFromWifPrivateKey(t *testing.T) {
 //
 // It tests different scenarios where the function should return an error message.
 func TestCreateNewWalletErr(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name       string
 		privKeyRaw *big.Int
@@ -233,6 +239,8 @@ func TestCreateNewWalletRandom(t *testing.T) {
 
 // TestAddPoints tests the point addition in Jacobian coordinates.
 func TestAddPoints(t *testing.T) {
+	t.Parallel()
+
 	var pt JacobianPoint
 
 	var testcases = []struct {
@@ -285,6 +293,8 @@ func TestAddPoints(t *testing.T) {
 // It tests different scenarios including doubling a generator point, a random point, and a point at infinity.
 // The function compares the expected result with the actual result after performing the point doubling operation.
 func TestDblPoint(t *testing.T) {
+	t.Parallel()
+
 	var pt JacobianPoint
 
 	var testcases = []struct {
@@ -329,6 +339,8 @@ func TestDblPoint(t *testing.T) {
 
 // TestMulPoint tests point multiplication.
 func TestMulPoint(t *testing.T) {
+	t.Parallel()
+
 	var pt JacobianPoint
 
 	var testcases = []struct {
@@ -373,6 +385,8 @@ func TestMulPoint(t *testing.T) {
 }
 
 func TestParseRFCMessage(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name     string
 		message  string
@@ -437,6 +451,8 @@ H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd
 }
 
 func TestSignMessageDeterministic(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name          string
 		privKey       *string
@@ -519,6 +535,8 @@ func TestSignMessageDeterministic(t *testing.T) {
 }
 
 func TestSignMessageNonDeterministic(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name          string
 		privKey       *string
@@ -577,6 +595,8 @@ func TestSignMessageNonDeterministic(t *testing.T) {
 }
 
 func TestSignMessageErr(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name          string
 		privKey       *string
@@ -624,6 +644,8 @@ func TestSignMessageErr(t *testing.T) {
 }
 
 func TestVerifyMessage(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name     string
 		message  *BitcoinMessage
@@ -725,6 +747,8 @@ func TestVerifyMessage(t *testing.T) {
 }
 
 func TestVerifyMessageErr(t *testing.T) {
+	t.Parallel()
+
 	var testcases = []struct {
 		name     string
 		message  *BitcoinMessage

@@ -965,10 +965,10 @@ func varInt(length uint64) []byte {
 		lenBytes = 8
 		prefix = 0xFF
 	}
-	bs := make([]byte, 9)
-	bs[0] = prefix
-	binary.LittleEndian.PutUint64(bs[1:], length)
-	return bs[:lenBytes+1]
+	buf := make([]byte, 9)
+	buf[0] = prefix
+	binary.LittleEndian.PutUint64(buf[1:], length)
+	return buf[:lenBytes+1]
 }
 
 // msgMagic generates a Bitcoin message magic byte sequence from the given message.
@@ -1484,9 +1484,9 @@ func CreateWallets(n int, path string) {
 	}()
 	wg.Add(n)
 	for range n {
-		jobs <- struct{}{}
 		go func() {
 			defer wg.Done()
+			jobs <- struct{}{}
 			w, _ := CreateNewWallet(nil, nil)
 			walletChan <- w
 			<-jobs
