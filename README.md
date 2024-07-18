@@ -1,5 +1,9 @@
 # The [Bitcoin Message Tool](https://github.com/shadowy-pycoder/bitcoin_message_tool) in Go
 
+A lightweight CLI tool for signing and verification of bitcoin messages. Bitcoin message is the most straightforward and natural way to prove ownership over a given address without revealing any confidential information.
+
+This tool closely follows specification described in [BIP137](https://github.com/bitcoin/bips/blob/master/bip-0137.mediawiki)
+
 ## Installation
 
 ```shell
