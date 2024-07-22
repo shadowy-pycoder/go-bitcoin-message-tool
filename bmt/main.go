@@ -145,8 +145,6 @@ Native SegWit Address: bc1qum0at29ayuq2ndk39z4zwf4zdpxv5ker570ape
 	genPointX          = NewInt("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798")
 	genPointY          = NewInt("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8")
 	genPoint           = NewJacobianPoint(genPointX, genPointY, one)
-	pow256             big.Int
-	pow256M1           = pow256.Exp(two, big.NewInt(256), nil).Sub(&pow256, one)
 	precomputes        = getPrecomputes()
 	Secp256k1          = secp256k1{
 		PCurve:   pCurve,
@@ -213,6 +211,14 @@ func NewJacobianPoint(x, y, z *big.Int) *JacobianPoint {
 		Z: new(big.Int).Set(z)}
 }
 
+// Set sets the Jacobian point to the provided point.
+func (pt *JacobianPoint) Set(q *JacobianPoint) *JacobianPoint {
+	pt.X = new(big.Int).Set(q.X)
+	pt.Y = new(big.Int).Set(q.Y)
+	pt.Z = new(big.Int).Set(q.Z)
+	return pt
+}
+
 // Eq compares the current JacobianPoint with another JacobianPoint.
 //
 // Parameters:
@@ -238,10 +244,7 @@ func (pt *JacobianPoint) Eq(q *JacobianPoint) bool {
 func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
 	var Y2, S, M, x, y, z, tx, ty big.Int
 	if p.X.Cmp(Secp256k1.PCurve) == 0 {
-		pt.X = x.Set(p.X)
-		pt.Y = y.Set(p.Y)
-		pt.Z = z.Set(p.Z)
-		return pt
+		return pt.Set(p)
 	}
 	Y2.Mul(p.Y, p.Y)
 	S.Mul(four, p.X).Mul(&S, &Y2)
@@ -272,16 +275,10 @@ func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
 func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 	var PZ2, QZ2, U1, U2, S1, S2, H, R, H2, H3, x, tx, y, ty, z big.Int
 	if p.X.Cmp(Secp256k1.PCurve) == 0 {
-		pt.X = x.Set(q.X)
-		pt.Y = y.Set(q.Y)
-		pt.Z = z.Set(q.Z)
-		return pt
+		return pt.Set(q)
 	}
 	if q.X.Cmp(Secp256k1.PCurve) == 0 {
-		pt.X = x.Set(p.X)
-		pt.Y = y.Set(p.Y)
-		pt.Z = z.Set(p.Z)
-		return pt
+		return pt.Set(p)
 	}
 	PZ2.Mul(p.Z, p.Z)
 	QZ2.Mul(q.Z, q.Z)
@@ -292,13 +289,8 @@ func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 	if U1.Cmp(&U2) == 0 {
 		if S1.Cmp(&S2) == 0 {
 			return pt.Dbl(p)
-		} else {
-			pt.X = x.Set(IdentityPoint.X)
-			pt.Y = y.Set(IdentityPoint.Y)
-			pt.Z = z.Set(IdentityPoint.Z)
-			return pt
 		}
-
+		return pt.Set(IdentityPoint)
 	}
 	H.Sub(&U2, &U1)
 	R.Sub(&S2, &S1)
@@ -313,14 +305,39 @@ func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
 	return pt
 }
 
-func getPrecomputes() []*JacobianPoint {
-	precomputes := make([]*JacobianPoint, 256)
+func getPrecomputes() []JacobianPoint {
+	precomputes := make([]JacobianPoint, 256)
 	p := NewJacobianPoint(Secp256k1.GenPoint.X, Secp256k1.GenPoint.Y, Secp256k1.GenPoint.Z)
 	for i := range len(precomputes) {
-		precomputes[i] = NewJacobianPoint(p.X, p.Y, p.Z)
+		precomputes[i] = *NewJacobianPoint(p.X, p.Y, p.Z)
 		p.Dbl(p)
 	}
 	return precomputes
+}
+
+// Bits converts scalar bytes into a little-endian bit array.
+//
+// Parameters:
+// - bs: the byte slice to convert
+// - truncate: a boolean indicating whether to truncate the resulting bit array to the length of the input byte slice
+//
+// Returns:
+// - a slice of integers representing the bit array
+func Bits(bs []byte, truncate bool) []int {
+	bsLen := len(bs)
+	if bsLen > 32 {
+		panic("scalar is out of range")
+	}
+	r := make([]int, 256)
+	for i := bsLen - 1; i >= 0; i-- {
+		for j := 7; j >= 0; j-- {
+			r[(bsLen-1-i)*8+j] = int(bs[i] >> uint(j) & 0x01)
+		}
+	}
+	if truncate {
+		return r[:bsLen*8]
+	}
+	return r
 }
 
 // Mul performs elliptic curve multiplication.
@@ -333,30 +350,25 @@ func getPrecomputes() []*JacobianPoint {
 //
 // https://paulmillr.com/posts/noble-secp256k1-fast-ecc/#fighting-timing-attacks
 func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
-	var n, fakeN big.Int
+	var n big.Int
+	var pnt, q JacobianPoint
 	n.Set(scalar)
-	pnt := NewJacobianPoint(IdentityPoint.X, IdentityPoint.Y, IdentityPoint.Z)
+	pnt.Set(IdentityPoint)
 	if p == nil {
-		fakeP := NewJacobianPoint(IdentityPoint.X, IdentityPoint.Y, IdentityPoint.Z)
-		fakeN.Xor(pow256M1, &n)
-		for _, q := range precomputes {
-			if IsOdd(&n) {
-				pnt.Add(pnt, q)
-			} else {
-				fakeP.Add(fakeP, q)
+		scalarBits := Bits(n.Bytes(), false)
+		for i, q := range precomputes {
+			if scalarBits[i] == 1 {
+				pnt.Add(&pnt, &q)
 			}
-			n.Rsh(&n, 1)
-			fakeN.Rsh(&fakeN, 1)
-
 		}
 	} else {
-		q := NewJacobianPoint(p.X, p.Y, p.Z)
-		for n.Cmp(zero) == 1 {
-			if IsOdd(&n) {
-				pnt.Add(pnt, q)
+		q.Set(p)
+		scalarBits := Bits(n.Bytes(), true)
+		for _, n := range scalarBits {
+			if n == 1 {
+				pnt.Add(&pnt, &q)
 			}
-			n.Rsh(&n, 1)
-			q.Dbl(q)
+			q.Dbl(&q)
 		}
 	}
 	pt.X = pnt.X

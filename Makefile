@@ -20,7 +20,7 @@ test:
 	go test -o ${TEST_DIR} -v -count=1 ${TEST_DIR}
 
 test100:
-	go test -o ${TEST_DIR} -v -count=100 ${TEST_DIR}
+	go test -o ${TEST_DIR} -count=100 ${TEST_DIR}
 
 race:
 	go test -o ${TEST_DIR} -v -race -count=1 ${TEST_DIR}
