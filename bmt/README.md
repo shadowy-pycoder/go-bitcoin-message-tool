@@ -18,11 +18,11 @@ import (
 
     func main() {
         wifStr := bmt.NewStr("Kx4XofogMJhEdvHGSMRdztgEg3BBHs9B18yv9uBe1VphNcpKyMnF")
-	    w, _ := bmt.CreateNewWallet(nil, wifStr)
-	    fmt.Println(w)
-	    fmt.Println()
+        w, _ := bmt.CreateNewWallet(nil, wifStr)
+        fmt.Println(w)
+        fmt.Println()
         fmt.Println(w.PrivateKey().Hex())
-	    fmt.Println(w.PrivateKey().Wif())
+        fmt.Println(w.PrivateKey().Wif())
         fmt.Println(w.PublicKey())
         fmt.Println(w.PublicKeyRaw())
         fmt.Println(w.LegacyAddress())
@@ -31,8 +31,8 @@ import (
         fmt.Println(w.TaprootAddress())
 
         var p bmt.JacobianPoint
-	    p.Mul(w.PrivateKey().Hex(), nil)
-	    fmt.Println(p.ToAffine().Eq(w.PublicKeyRaw()))
+        p.Mul(w.PrivateKey().Hex(), nil)
+        fmt.Println(p.ToAffine().Eq(w.PublicKeyRaw()))
     }
 ```
 ```shell
