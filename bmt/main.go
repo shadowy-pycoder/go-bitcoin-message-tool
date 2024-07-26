@@ -11,8 +11,6 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"hash"
-	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,6 +21,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/golangcrypto/ripemd160"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/mr-tron/base58"
 	"golang.org/x/term"
 )
@@ -121,49 +120,44 @@ bmt create -n 100 -path=./wallets.txt
 Create a wallet and print to console (you can redirect output to a file)
 
 bmt create -n 1
-Private Key (Raw): 60180445912902181241548287604652662614241904941006823251259342289760572987478
+Private Key (HEX): 850cece14ffefdb864f6007718a5243dae9194841617c7d6d77b67482d40d856
 Private Key (WIF): L1gLtHEKG4FbbxQDzth3ksCZ4jTSjRvcU7K2KDeDE368pG8MjkFg
-Public Key (Raw): (x=47540055824935908510461373219072689454917771939693273636263256867956974171064, y=80481361684980169856026167260820025559478707302150175078848962789012628471346)
-Public Key (HEX Copmpressed): 02691ab7d2b2e1b41a8df334a5471a3abd7a93c8822b2abf3de64c552147dc33b8
+Public Key (Raw): (X=691ab7d2b2e1b41a8df334a5471a3abd7a93c8822b2abf3de64c552147dc33b8, Y=b1eed621c6b9e790a901ca30eb55ee95d591c3e6dc2e6aa30f2b9f5c525e7e32)
+Public Key (HEX Compressed): 02691ab7d2b2e1b41a8df334a5471a3abd7a93c8822b2abf3de64c552147dc33b8
 Legacy Address: 1N3kZRUrEioGxXQbSyCWuBwmoFp4T62i93
 Nested SegWit Address: 3KWsrxLMHPU1v8riptj33zCsWD8bf6jfLF
 Native SegWit Address: bc1qum0at29ayuq2ndk39z4zwf4zdpxv5ker570ape
+Taproot Address: bc1p5utaw0g77graev5yw575c3jnzh8j88ezzw39lgr250ghppwpyccsvjkvyp
 `
 	beginSignedMessage = "-----BEGIN BITCOIN SIGNED MESSAGE-----"
 	beginSignature     = "-----BEGIN BITCOIN SIGNATURE-----"
 	endSignature       = "-----END BITCOIN SIGNATURE-----"
-	zero               = big.NewInt(0)
-	one                = big.NewInt(1)
-	two                = big.NewInt(2)
-	three              = big.NewInt(3)
-	four               = big.NewInt(4)
-	eight              = big.NewInt(8)
-	pCurve             = NewInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F")
-	nCurve             = NewInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")
-	aCurve             = zero
-	bCurve             = big.NewInt(7)
-	genPointX          = NewInt("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798")
-	genPointY          = NewInt("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8")
-	genPoint           = NewJacobianPoint(genPointX, genPointY, one)
+	order              = NewFieldVal("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+	zero               = NewFieldVal("00")
+	one                = NewFieldVal("01")
+	genPointX          = NewFieldVal("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+	genPointY          = NewFieldVal("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8")
+	GenPoint           = NewJacobianPoint(genPointX, genPointY, one)
 	precomputes        = getPrecomputes()
-	Secp256k1          = secp256k1{
-		PCurve:   pCurve,
-		NCurve:   nCurve,
-		ACurve:   aCurve,
-		BCurve:   bCurve,
-		GenPoint: genPoint,
-	}
-	IdentityPoint = NewJacobianPoint(pCurve, zero, one)
-	addressTypes  = []string{"legacy", "nested", "segwit"}
-	headers       = [5][4]byte{
+	IdentityPoint      = NewJacobianPoint(zero, zero, zero)
+	addressTypes       = []string{"legacy", "nested", "segwit"}
+	headers            = [5][4]byte{
 		{0x1b, 0x1c, 0x1d, 0x1e}, // 27 - 30 P2PKH uncompressed
 		{0x1f, 0x20, 0x21, 0x22}, // 31 - 34 P2PKH compressed
 		{0x23, 0x24, 0x25, 0x26}, // 35 - 38 P2WPKH-P2SH compressed (BIP-137)
 		{0x27, 0x28, 0x29, 0x2a}, // 39 - 42 P2WPKH compressed (BIP-137)
 		{0x2b, 0x2c, 0x2d, 0x2e}, // TODO 43 - 46 P2TR
 	}
-	OutOfRangeError = &PrivateKeyError{Message: "scalar is out of range"}
+	pool = sync.Pool{
+		New: func() any {
+			s := make([]int, 256)
+			return &s
+		},
+	}
 )
+
+type FieldVal = secp256k1.FieldVal
+type ModNScalar = secp256k1.ModNScalar
 
 type PrivateKeyError struct {
 	Message string
@@ -190,33 +184,26 @@ func (e *SignatureError) Error() string { return e.Message }
 func (e *SignatureError) Unwrap() error { return e.Err }
 
 type JacobianPoint struct {
-	X *big.Int
-	Y *big.Int
-	Z *big.Int
+	X FieldVal
+	Y FieldVal
+	Z FieldVal
 }
 
-// NewJacobianPoint creates a new JacobianPoint with the given coordinates.
-//
-// Parameters:
-//   - x: a pointer to a big.Int representing the x-coordinate.
-//   - y: a pointer to a big.Int representing the y-coordinate.
-//   - z: a pointer to a big.Int representing the z-coordinate.
-//
-// Returns:
-//   - a pointer to a JacobianPoint struct representing the new point.
-func NewJacobianPoint(x, y, z *big.Int) *JacobianPoint {
-	return &JacobianPoint{
-		X: new(big.Int).Set(x),
-		Y: new(big.Int).Set(y),
-		Z: new(big.Int).Set(z)}
+// NewJacobianPoint creates a new JacobianPoint with the given x, y, and z coordinates.
+func NewJacobianPoint(x, y, z *FieldVal) *JacobianPoint {
+	var p JacobianPoint
+	p.X.Set(x)
+	p.Y.Set(y)
+	p.Z.Set(z)
+	return &p
 }
 
 // Set sets the Jacobian point to the provided point.
-func (pt *JacobianPoint) Set(q *JacobianPoint) *JacobianPoint {
-	pt.X = new(big.Int).Set(q.X)
-	pt.Y = new(big.Int).Set(q.Y)
-	pt.Z = new(big.Int).Set(q.Z)
-	return pt
+func (p *JacobianPoint) Set(q *JacobianPoint) *JacobianPoint {
+	p.X.Set(&q.X)
+	p.Y.Set(&q.Y)
+	p.Z.Set(&q.Z)
+	return p
 }
 
 // Eq compares the current JacobianPoint with another JacobianPoint.
@@ -227,7 +214,7 @@ func (pt *JacobianPoint) Set(q *JacobianPoint) *JacobianPoint {
 // Returns:
 //   - bool: true if the points are equal, false otherwise.
 func (pt *JacobianPoint) Eq(q *JacobianPoint) bool {
-	return pt.X.Cmp(q.X) == 0 && pt.Y.Cmp(q.Y) == 0 && pt.Z.Cmp(q.Z) == 0
+	return pt.X.Equals(&q.X) && pt.Y.Equals(&q.Y) && pt.Z.Equals(&q.Z)
 }
 
 // Dbl performs a point doubling operation in the elliptic curve cryptography with 256 Bit Primes.
@@ -238,23 +225,33 @@ func (pt *JacobianPoint) Eq(q *JacobianPoint) bool {
 // Returns:
 // A pointer to a JacobianPoint struct representing the result of the point doubling operation.
 //
-// Fast Prime Field Elliptic Curve Cryptography with 256 Bit Primes
-// Shay Gueron, Vlad Krasnov
-// https://eprint.iacr.org/2013/816.pdf page 4
+// https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-0.html#doubling-dbl-2009-l
 func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
-	var Y2, S, M, x, y, z, tx, ty big.Int
-	if p.X.Cmp(Secp256k1.PCurve) == 0 {
-		return pt.Set(p)
+	if p.Y.IsZero() || p.Z.IsZero() {
+		return pt.Set(IdentityPoint)
 	}
-	Y2.Mul(p.Y, p.Y)
-	S.Mul(four, p.X).Mul(&S, &Y2)
-	M.Mul(three, p.X).Mul(&M, p.X)
-	x.Mul(&M, &M).Sub(&x, tx.Mul(two, &S)).Mod(&x, Secp256k1.PCurve)
-	y.Mul(&M, ty.Sub(&S, &x)).Sub(&y, ty.Mul(&Y2, &Y2).Mul(&ty, eight)).Mod(&y, Secp256k1.PCurve)
-	z.Mul(two, p.Y).Mul(&z, p.Z).Mod(&z, Secp256k1.PCurve)
-	pt.X = &x
-	pt.Y = &y
-	pt.Z = &z
+	var A, B, C, D, E, F, x, y, z FieldVal
+	A.SquareVal(&p.X)
+	B.SquareVal(&p.Y)
+	C.SquareVal(&B)
+	B.Add(&p.X).Square()
+	D.Set(&A).Add(&C).Negate(2)
+	D.Add(&B).MulInt(2)
+	E.Set(&A).MulInt(3)
+	F.SquareVal(&E)
+	x.Set(&D).MulInt(2).Negate(16)
+	x.Add(&F)
+	F.Set(&x).Negate(18).Add(&D).Normalize()
+	y.Set(&C).MulInt(8).Negate(8)
+	y.Add(F.Mul(&E))
+	if p.Z.IsOne() {
+		z.Set(&p.Y).MulInt(2)
+	} else {
+		z.Mul2(&p.Y, &p.Z).MulInt(2)
+	}
+	pt.X.Set(x.Normalize())
+	pt.Y.Set(y.Normalize())
+	pt.Z.Set(z.Normalize())
 	return pt
 }
 
@@ -269,93 +266,81 @@ func (pt *JacobianPoint) Dbl(p *JacobianPoint) *JacobianPoint {
 // Returns:
 //   - a pointer to a JacobianPoint representing the sum of p and q.
 //
-// Fast Prime Field Elliptic Curve Cryptography with 256 Bit Primes
-// Shay Gueron, Vlad Krasnov
-// https://eprint.iacr.org/2013/816.pdf page 4
+// https://hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-0.html#addition-add-2007-bl
 func (pt *JacobianPoint) Add(p, q *JacobianPoint) *JacobianPoint {
-	var PZ2, QZ2, U1, U2, S1, S2, H, R, H2, H3, x, tx, y, ty, z big.Int
-	if p.X.Cmp(Secp256k1.PCurve) == 0 {
+	if (p.X.IsZero() && p.Y.IsZero()) || p.Z.IsZero() {
 		return pt.Set(q)
 	}
-	if q.X.Cmp(Secp256k1.PCurve) == 0 {
+	if (q.X.IsZero() && q.Y.IsZero()) || q.Z.IsZero() {
 		return pt.Set(p)
 	}
-	PZ2.Mul(p.Z, p.Z)
-	QZ2.Mul(q.Z, q.Z)
-	U1.Mul(p.X, &QZ2).Mod(&U1, Secp256k1.PCurve)
-	U2.Mul(q.X, &PZ2).Mod(&U2, Secp256k1.PCurve)
-	S1.Mul(p.Y, &QZ2).Mul(&S1, q.Z).Mod(&S1, Secp256k1.PCurve)
-	S2.Mul(q.Y, &PZ2).Mul(&S2, p.Z).Mod(&S2, Secp256k1.PCurve)
-	if U1.Cmp(&U2) == 0 {
-		if S1.Cmp(&S2) == 0 {
+	var Z1Z1, Z2Z2, U1, U2, S1, S2, x, y, z FieldVal
+	Z1Z1.SquareVal(&p.Z)
+	Z2Z2.SquareVal(&q.Z)
+	U1.Set(&p.X).Mul(&Z2Z2).Normalize()
+	U2.Set(&q.X).Mul(&Z1Z1).Normalize()
+	S1.Set(&p.Y).Mul(&Z2Z2).Mul(&q.Z).Normalize()
+	S2.Set(&q.Y).Mul(&Z1Z1).Mul(&p.Z).Normalize()
+	if U1.Equals(&U2) {
+		if S1.Equals(&S2) {
 			return pt.Dbl(p)
 		}
 		return pt.Set(IdentityPoint)
 	}
-	H.Sub(&U2, &U1)
-	R.Sub(&S2, &S1)
-	H2.Mul(&H, &H)
-	H3.Mul(&H2, &H)
-	x.Mul(&R, &R).Sub(&x, &H3).Sub(&x, tx.Mul(two, &U1).Mul(&tx, &H2)).Mod(&x, Secp256k1.PCurve)
-	y.Mul(&R, y.Mul(&U1, &H2).Sub(&y, &x)).Sub(&y, ty.Mul(&S1, &H3)).Mod(&y, Secp256k1.PCurve)
-	z.Mul(&H, p.Z).Mul(&z, q.Z).Mod(&z, Secp256k1.PCurve)
-	pt.X = &x
-	pt.Y = &y
-	pt.Z = &z
+	var H, I, J, R, R2, V, negU1, negS1, negX3 FieldVal
+	negU1.Set(&U1).Negate(1)
+	H.Add2(&U2, &negU1)
+	I.Set(&H).MulInt(2).Square()
+	J.Mul2(&H, &I)
+	negS1.Set(&S1).Negate(1)
+	R.Set(&S2).Add(&negS1).MulInt(2)
+	R2.SquareVal(&R)
+	V.Mul2(&U1, &I)
+	x.Set(&V).MulInt(2).Add(&J).Negate(3)
+	x.Add(&R2)
+	negX3.Set(&x).Negate(5)
+	y.Mul2(&S1, &J).MulInt(2).Negate(2)
+	y.Add(V.Add(&negX3).Mul(&R))
+	z.Add2(&p.Z, &q.Z).Square()
+	z.Add(Z1Z1.Add(&Z2Z2).Negate(2))
+	z.Mul(&H)
+
+	pt.X.Set(x.Normalize())
+	pt.Y.Set(y.Normalize())
+	pt.Z.Set(z.Normalize())
 	return pt
 }
 
+// getPrecomputes generates a slice of JacobianPoints by iteratively doubling a generator point.
 func getPrecomputes() []JacobianPoint {
 	precomputes := make([]JacobianPoint, 256)
-	p := NewJacobianPoint(Secp256k1.GenPoint.X, Secp256k1.GenPoint.Y, Secp256k1.GenPoint.Z)
+	var p JacobianPoint
+	p.Set(GenPoint)
 	for i := range len(precomputes) {
-		precomputes[i] = *NewJacobianPoint(p.X, p.Y, p.Z)
-		p.Dbl(p)
+		precomputes[i].Set(&p)
+		p.Dbl(&p)
 	}
 	return precomputes
-}
-
-// Bits converts scalar bytes into a little-endian bit array.
-//
-// Parameters:
-// - bs: the byte slice to convert
-// - truncate: a boolean indicating whether to truncate the resulting bit array to the length of the input byte slice
-//
-// Returns:
-// - a slice of integers representing the bit array
-func Bits(bs []byte, truncate bool) []int {
-	bsLen := len(bs)
-	if bsLen > 32 {
-		panic("scalar is out of range")
-	}
-	r := make([]int, 256)
-	for i := bsLen - 1; i >= 0; i-- {
-		for j := 7; j >= 0; j-- {
-			r[(bsLen-1-i)*8+j] = int(bs[i] >> uint(j) & 0x01)
-		}
-	}
-	if truncate {
-		return r[:bsLen*8]
-	}
-	return r
 }
 
 // Mul performs elliptic curve multiplication.
 //
 // It takes two parameters:
-//   - scalar: a pointer to a big.Int representing the scalar value.
+//   - scalar: a pointer to a ModNScalar representing the scalar value.
 //   - p: a pointer to a JacobianPoint representing the point to be multiplied.
 //
 // It returns a pointer to a JacobianPoint representing the result of the multiplication.
 //
 // https://paulmillr.com/posts/noble-secp256k1-fast-ecc/#fighting-timing-attacks
-func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
-	var n big.Int
+func (pt *JacobianPoint) Mul(scalar *ModNScalar, p *JacobianPoint) *JacobianPoint {
 	var pnt, q JacobianPoint
-	n.Set(scalar)
 	pnt.Set(IdentityPoint)
+	ptr := pool.Get().(*[]int)
+	defer pool.Put(ptr)
+	scalarBits := *ptr
+	bs := scalar.Bytes()
+	ConvertToBits(bs[:], &scalarBits)
 	if p == nil {
-		scalarBits := Bits(n.Bytes(), false)
 		for i, q := range precomputes {
 			if scalarBits[i] == 1 {
 				pnt.Add(&pnt, &q)
@@ -363,7 +348,6 @@ func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
 		}
 	} else {
 		q.Set(p)
-		scalarBits := Bits(n.Bytes(), true)
 		for _, n := range scalarBits {
 			if n == 1 {
 				pnt.Add(&pnt, &q)
@@ -371,9 +355,9 @@ func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
 			q.Dbl(&q)
 		}
 	}
-	pt.X = pnt.X
-	pt.Y = pnt.Y
-	pt.Z = pnt.Z
+	pt.X.Set(pnt.X.Normalize())
+	pt.Y.Set(pnt.Y.Normalize())
+	pt.Z.Set(pnt.Z.Normalize())
 	return pt
 }
 
@@ -384,32 +368,33 @@ func (pt *JacobianPoint) Mul(scalar *big.Int, p *JacobianPoint) *JacobianPoint {
 //
 // Returns:
 // A pointer to a Point representing the point in affine coordinates.
-func (pt *JacobianPoint) ToAffine() *Point {
-	if pt.X.Cmp(Secp256k1.PCurve) == 0 {
-		return &Point{X: new(big.Int).Set(IdentityPoint.X), Y: new(big.Int).Set(IdentityPoint.Y)}
+func (p *JacobianPoint) ToAffine() *Point {
+	if p.Y.IsZero() || p.Z.IsZero() {
+		return &Point{X: *p.X.SetInt(0), Y: *p.Y.SetInt(0)}
 	}
-	var x, y, invZ2 big.Int
-	invZ := ModInverse(pt.Z, Secp256k1.PCurve)
-	invZ2.Mul(invZ, invZ)
-	x.Mul(pt.X, &invZ2).Mod(&x, Secp256k1.PCurve)
-	y.Mul(pt.Y, &invZ2).Mul(&y, invZ).Mod(&y, Secp256k1.PCurve)
-	return &Point{X: &x, Y: &y}
+	var invZ, invZ2 FieldVal
+	invZ.Set(&p.Z).Inverse()
+	invZ2.SquareVal(&invZ)
+	p.X.Mul(&invZ2)
+	p.Y.Mul(invZ2.Mul(&invZ))
+	p.Z.SetInt(1)
+	return &Point{X: *p.X.Normalize(), Y: *p.Y.Normalize()}
 }
 
 // String returns a string representation of the JacobianPoint struct.
 //
-// It returns a string in the format "(x=<X>, y=<Y>, z=<Z>)", where <X>, <Y> and <Z> are the
-// string representations of the X, Y and Z coordinates of the JacobianPoint.
+// It returns a string in the format "(x=X=<X>, Y=<Y>, Z=<Z>)", where <X>, <Y> and <Z> are the
+// hexadeciaml representations of the X, Y and Z coordinates of the JacobianPoint.
 func (pt *JacobianPoint) String() string {
-	return fmt.Sprintf("(X=%s, Y=%s, Z=%s)", pt.X, pt.Y, pt.Z)
+	return fmt.Sprintf("(X=%v, Y=%v, Z=%v)", pt.X, pt.Y, pt.Z)
 }
 
 type Point struct {
-	X *big.Int
-	Y *big.Int
+	X FieldVal
+	Y FieldVal
 }
 
-// Eq compares the current Point with another nPoint.
+// Eq compares the current Point with another Point.
 //
 // Parameters:
 //   - q: the Point to compare with.
@@ -417,15 +402,15 @@ type Point struct {
 // Returns:
 //   - bool: true if the points are equal, false otherwise.
 func (pt *Point) Eq(q *Point) bool {
-	return pt.X.Cmp(q.X) == 0 && pt.Y.Cmp(q.Y) == 0
+	return pt.X.Equals(&q.X) && pt.Y.Equals(&q.Y)
 }
 
 // String returns a string representation of the Point struct.
 //
-// It returns a string in the format "(x=<X>, y=<Y>)", where <X> and <Y> are the
-// string representations of the X and Y coordinates of the Point.
+// It returns a string in the format "(X=<X>, Y=<Y>)", where <X> and <Y> are the
+// hexadecimal representations of the X and Y coordinates of the Point.
 func (pt *Point) String() string {
-	return fmt.Sprintf("(X=%s, Y=%s)", pt.X, pt.Y)
+	return fmt.Sprintf("(X=%v, Y=%v)", pt.X, pt.Y)
 }
 
 // ToJacobian converts a point from affine coordinates to Jacobian coordinates.
@@ -436,37 +421,34 @@ func (pt *Point) String() string {
 // Returns:
 // A pointer to a JacobianPoint representing the point in Jacobian coordinates.
 func (pt *Point) ToJacobian() *JacobianPoint {
-	return NewJacobianPoint(pt.X, pt.Y, one)
+	return &JacobianPoint{pt.X, pt.Y, *new(FieldVal).SetInt(1)}
 }
 
 // Valid checks if a given point is on the elliptic curve.
-//
-// Parameters:
-//   - p: a pointer to a Point representing the point to be validated.
-//
-// Returns:
-//   - bool: true if the point is valid, false otherwise.
 func (pt *Point) Valid() bool {
-	if pt.X.Cmp(Secp256k1.PCurve) == 0 {
-		return false
-	}
-	var r1, r2 big.Int
-	r1.Exp(pt.X, three, nil).Add(&r1, Secp256k1.BCurve).Mod(&r1, Secp256k1.PCurve)
-	r2.Exp(pt.Y, two, Secp256k1.PCurve)
-	return r1.Cmp(&r2) == 0
+	r1 := new(FieldVal).SquareVal(&pt.Y).Normalize()
+	r2 := new(FieldVal).SquareVal(&pt.X).Mul(&pt.X).AddInt(7).Normalize()
+	return r1.Equals(r2)
 }
 
-type secp256k1 struct {
-	PCurve   *big.Int
-	NCurve   *big.Int
-	ACurve   *big.Int
-	BCurve   *big.Int
-	GenPoint *JacobianPoint
+// NewSignature creates a new signature given some r and s values.
+func NewSignature(r, s *ModNScalar) *Signature {
+	return &Signature{*r, *s}
 }
 
 type Signature struct {
-	R *big.Int
-	S *big.Int
+	r ModNScalar
+	s ModNScalar
+}
+
+// R returns the r value of the signature.
+func (sig *Signature) R() ModNScalar {
+	return sig.r
+}
+
+// S returns the s value of the signature.
+func (sig *Signature) S() ModNScalar {
+	return sig.s
 }
 
 type BitcoinMessage struct {
@@ -481,35 +463,38 @@ type VerifyMessageResult struct {
 	Message  string
 }
 
-type PrivateKey struct {
-	Raw          *big.Int
-	Wif          *string
-	Uncompressed bool
+type privatekey struct {
+	raw          *ModNScalar
+	wif          *string
+	uncompressed bool
 }
 
-// generate generates a random big.Int value within the range of secp256k1.NCurve.
-//
-// It sets the value of the receiver PrivateKey's raw field to the generated random big.Int.
-func generate() (*big.Int, error) {
-	if n, err := rand.Int(rand.Reader, Secp256k1.NCurve); err != nil {
-		return nil, &PrivateKeyError{Message: "failed generating random integer", Err: err}
-	} else {
-		return n, nil
+// generate generates a random value within the range of the secp256k1 group order.
+func generate() *ModNScalar {
+	buf := make([]byte, 32)
+	for {
+		if _, err := rand.Read(buf); err != nil {
+			panic(err)
+		}
+		if scalar, ok := ValidateKey(&buf); ok {
+			return scalar
+		}
 	}
+
 }
 
-// NewPrivateKey generates a new PrivateKey object.
+// NewPrivateKey generates a new privatekey object.
 //
 // It takes in two parameters:
-//   - raw: a pointer to a big.Int object representing the raw value of the private key.
+//   - raw: a pointer to a byte slice object representing the raw value of the private key.
 //   - wif: a pointer to a string representing the WIF (Wallet Import Format) of the private key.
 //
-// The function returns a pointer to a PrivateKey object and an error.
+// The function returns a pointer to a privatekey object and an error.
 //
 //   - If both raw and wif are provided, it returns an error.
-//   - If neither raw nor wif is provided, it generates a random private key and returns a new PrivateKey object.
-//   - If only wif is provided, it creates a new PrivateKey object with the provided WIF.
-//   - If only raw is provided, it creates a new PrivateKey object with the provided raw value.
+//   - If neither raw nor wif is provided, it generates a random private key and returns a new privatekey object.
+//   - If only wif is provided, it creates a new privatekey object with the provided WIF.
+//   - If only raw is provided, it creates a new privatekey object with the provided raw value.
 //
 // The function checks if the generated or provided private key is valid.
 // If the private key is invalid, it returns an error.
@@ -517,51 +502,58 @@ func generate() (*big.Int, error) {
 // The function also encodes the generated or provided private key using the ToWif() method.
 // If the encoding fails, it returns an error.
 //
-// The function returns a pointer to the newly created PrivateKey object.
-func NewPrivateKey(raw *big.Int, wif *string) (*PrivateKey, error) {
-	var (
-		pk  PrivateKey
-		err error
-	)
+// The function returns a pointer to the newly created privatekey object.
+func NewPrivateKey(raw *[]byte, wif *string) (*privatekey, error) {
+	var pk privatekey
 	if raw != nil && wif != nil {
 		return nil, &PrivateKeyError{Message: "cannot specify both raw and wif"}
 	}
 	if raw == nil && wif == nil {
-		pk.Raw, err = generate()
-		if err != nil {
-			return nil, err
-		}
-		if !ValidKey(pk.Raw) {
-			panic(OutOfRangeError)
-		}
-		pk.Uncompressed = false
-		encoded, _ := pk.ToWif(pk.Uncompressed)
-		pk.Wif = encoded
+		pk.raw = generate()
+		pk.uncompressed = false
+		encoded, _ := pk.hexToWif(pk.uncompressed)
+		pk.wif = encoded
 	} else if wif == nil {
-		pk.Raw = new(big.Int).Set(raw)
-		if !ValidKey(pk.Raw) {
-			return nil, OutOfRangeError
+		scalar, ok := ValidateKey(raw)
+		if !ok {
+			return nil, &PrivateKeyError{Message: "scalar is out of range"}
 		}
-		pk.Uncompressed = false
-		encoded, _ := pk.ToWif(pk.Uncompressed)
-		pk.Wif = encoded
+		pk.raw = scalar
+		pk.uncompressed = false
+		encoded, _ := pk.hexToWif(pk.uncompressed)
+		pk.wif = encoded
 	} else if raw == nil {
-		pk.Wif = wif
-		uncompressed, err := pk.ToInt()
+		pk.wif = wif
+		uncompressed, err := pk.wifToHex()
 		if err != nil {
 			return nil, err
 		}
-		pk.Uncompressed = uncompressed
+		pk.uncompressed = uncompressed
 	}
 	return &pk, nil
+}
+
+// Hex returns the hexadecimal representation of the private key.
+func (k *privatekey) Hex() *ModNScalar {
+	return k.raw
+}
+
+// Wif returns the WIF (Wallet Import Format) representation of the private key.
+func (k *privatekey) Wif() string {
+	return *k.wif
+}
+
+// IsCompressed returns a boolean indicating whether the private key is compressed.
+func (k *privatekey) IsCompressed() bool {
+	return !k.uncompressed
 }
 
 // splitBytes splits the private key bytes into three parts: the version byte, the private key bytes, and the checksum bytes.
 //
 // It takes no parameters.
 // It returns three byte slices: the version byte, the private key bytes, and the checksum bytes.
-func (k *PrivateKey) splitBytes() (version []byte, payload []byte, checkSum []byte, err error) {
-	privkey, err := base58.Decode(*k.Wif)
+func (k *privatekey) splitBytes() (version []byte, payload []byte, checkSum []byte, err error) {
+	privkey, err := base58.Decode(*k.wif)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -572,113 +564,113 @@ func (k *PrivateKey) splitBytes() (version []byte, payload []byte, checkSum []by
 	return privkey[:1], privkey[1 : pkLen-4], privkey[pkLen-4:], nil
 }
 
-// ToInt calculates the integer value of the private key.
+// wifToHex creates a hexadecimal representation of the private key.
 //
 // It returns a boolean indicating if the key is uncompressed and an error if any.
-func (k *PrivateKey) ToInt() (uncompressed bool, err error) {
-	var (
-		privKeyInt big.Int
-	)
-	if k.Wif == nil {
+func (k *privatekey) wifToHex() (uncompressed bool, err error) {
+
+	if k.wif == nil {
 		return false, &PrivateKeyError{Message: "wif cannot be empty"}
 	}
 	version, priVkey, checkSum, err := k.splitBytes()
 	if err != nil {
 		return false, &PrivateKeyError{Message: "failed decoding wif string", Err: err}
 	}
-	if !validCheckSum(version, priVkey, checkSum) {
+	if !validChecksum(version, priVkey, checkSum) {
 		return false, &PrivateKeyError{Message: "invalid wif checksum"}
 	}
+
+	var privKeyBytes []byte
 	if len(priVkey) == 33 {
-		privKeyInt.SetBytes(priVkey[:len(priVkey)-1])
+		privKeyBytes = priVkey[:len(priVkey)-1]
 		uncompressed = false
 	} else {
-		privKeyInt.SetBytes(priVkey)
+		privKeyBytes = priVkey
 		uncompressed = true
 	}
-	if !ValidKey(&privKeyInt) {
-		return false, OutOfRangeError
+	scalar, ok := ValidateKey(&privKeyBytes)
+	if !ok {
+		return false, &PrivateKeyError{Message: "scalar is out of range"}
 	}
-	k.Raw = &privKeyInt
+	k.raw = scalar
 	return uncompressed, nil
 }
 
-// ToWif generates the Wallet Import Format (WIF) for the private key.
+// hexToWif generates the Wallet Import Format (WIF) for the private key.
 //
 // It takes a boolean uncompressed indicating if the key is uncompressed.
 // It returns a pointer to a string and an error.
-func (k *PrivateKey) ToWif(uncompressed bool) (*string, error) {
-	if !ValidKey(k.Raw) {
-		return nil, OutOfRangeError
+func (k *privatekey) hexToWif(uncompressed bool) (*string, error) {
+	if k.raw == nil {
+		return nil, &PrivateKeyError{Message: "scalar is out of range"}
 	}
-	buf := make([]byte, 32)
-	pk := joinBytes([][]byte{{0x80}, k.Raw.FillBytes(buf), {0x01}}...)
+	pkBytes := k.raw.Bytes()
+	pk := joinBytesFixed(34, []byte{0x80}, pkBytes[:], []byte{0x01})
 	if uncompressed {
 		pk = pk[:len(pk)-1]
 	}
-	converted := base58.Encode(joinBytes([][]byte{pk, checkSum(pk)}...))
-	k.Wif = &converted
-	return k.Wif, nil
+	converted := base58.Encode(joinBytesFixed(len(pk)+4, pk, checkSum(pk)))
+	k.wif = &converted
+	return k.wif, nil
 }
 
 // CreateNewWallet generates a new wallet with private key, public key, and various address types.
 //
 // Parameters:
 //
-//   - raw: a pointer to a big.Int object representing the raw value of the private key.
+//   - raw: a pointer to a byte slice object representing the raw value of the private key.
 //   - wif: a pointer to a string representing the WIF (Wallet Import Format) of the private key.
 //
 // Returns:
-//   - A pointer to a Wallet struct representing the new wallet.
+//   - A pointer to a wallet struct representing the new wallet.
 //   - An error if any occurred during the generation process.
 //
 // If both parameters are nil generates a random wallet
-func CreateNewWallet(raw *big.Int, wif *string) (*Wallet, error) {
+func CreateNewWallet(raw *[]byte, wif *string) (*wallet, error) {
 	var nestedAddress, nativeAddress, taprootAddress string
 	privKey, err := NewPrivateKey(raw, wif)
 	if err != nil {
 		return nil, err
 	}
-	rawPubKey, err := createRawPubKey(privKey.Raw)
+	rawPubKey, err := createRawPubKey(privKey.raw)
 	if err != nil {
 		panic(err)
 	}
-	pubKey := createPubKey(rawPubKey, privKey.Uncompressed)
+	pubKey := createPubKey(rawPubKey, privKey.uncompressed)
 	legacyAddress := createAddress(pubKey)
-	if !privKey.Uncompressed {
+	if !privKey.uncompressed {
 		nestedAddress = createNestedSegwit(pubKey)
 		nativeAddress = createNativeSegwit(pubKey)
 		taprootAddress = createTaproot(createTweakedPubKey(rawPubKey))
 	}
-	return &Wallet{PrivKey: privKey,
-		RawPubKey: rawPubKey,
-		PubKey:    hex.EncodeToString(pubKey),
-		Legacy:    legacyAddress,
-		Nested:    nestedAddress,
-		Native:    nativeAddress,
-		Taproot:   taprootAddress}, nil
+	return &wallet{privKey: privKey,
+		rawPubKey: rawPubKey,
+		pubKey:    hex.EncodeToString(pubKey),
+		legacy:    legacyAddress,
+		nested:    nestedAddress,
+		native:    nativeAddress,
+		taproot:   taprootAddress}, nil
 }
 
-type Wallet struct {
-	PrivKey   *PrivateKey
-	RawPubKey *Point
-	PubKey    string
-	Legacy    string
-	Nested    string
-	Native    string
-	Taproot   string
+type wallet struct {
+	privKey   *privatekey
+	rawPubKey *Point
+	pubKey    string
+	legacy    string
+	nested    string
+	native    string
+	taproot   string
 }
 
-// String returns a formatted string representation of the Wallet.
+// String returns a formatted string representation of the wallet.
 //
-// It concatenates the private key (raw), private key (WIF), public key (raw),
-// public key (hex compressed), legacy address, nested segwit address, and
-// native segwit address into a single string.
+// It concatenates the private key (hex), private key (WIF), public key (raw),
+// public key (hex compressed) and addresses into a single string.
 //
 // Returns:
-//   - A string containing the formatted representation of the Wallet.
-func (w *Wallet) String() string {
-	return fmt.Sprintf(`Private Key (Raw): %s
+//   - A string containing the formatted representation of the wallet.
+func (w *wallet) String() string {
+	return fmt.Sprintf(`Private Key (HEX): %s
 Private Key (WIF): %s
 Public Key (Raw): %s
 Public Key (HEX Compressed): %s
@@ -686,22 +678,106 @@ Legacy Address: %s
 Nested SegWit Address: %s
 Native SegWit Address: %s
 Taproot Address: %s
-`, w.PrivKey.Raw, *w.PrivKey.Wif, w.RawPubKey, w.PubKey, w.Legacy, w.Nested, w.Native, w.Taproot)
+`, w.privKey.raw, *w.privKey.wif, w.rawPubKey, w.pubKey, w.legacy, w.nested, w.native, w.taproot)
 }
 
-// NewInt converts a hexadecimal string to a big.Int pointer.
+// PrivateKey returns the private key of the wallet.
+func (w *wallet) PrivateKey() *privatekey {
+	return w.privKey
+}
+
+// PublicKeyRaw returns the raw public key of the wallet.
+func (w *wallet) PublicKeyRaw() *Point {
+	return w.rawPubKey
+}
+
+// PublicKey returns the public key of the wallet.
+func (w *wallet) PublicKey() string {
+	return w.pubKey
+}
+
+// LegacyAddress returns the legacy address (P2PKH) of the wallet.
+func (w *wallet) LegacyAddress() string {
+	return w.legacy
+}
+
+// NestedSegwitAddress returns the nested SegWit address (P2WPKH-P2SH) of the wallet.
+//
+// Returns empty string if wallet created from WIF-uncompressed private key
+func (w *wallet) NestedSegwitAddress() string {
+	return w.nested
+}
+
+// SegwitAddress returns the native SegWit address (P2WPKH) of the wallet.
+//
+// Returns empty string if wallet created from WIF-uncompressed private key
+func (w *wallet) SegwitAddress() string {
+	return w.native
+}
+
+// TaprootAddress returns the Taproot Bitcoin address of the wallet.
+//
+// Returns empty string if wallet created from WIF-uncompressed private key
+func (w *wallet) TaprootAddress() string {
+	return w.taproot
+}
+
+// ConvertToBits converts scalar bytes into a little-endian bit array.
 //
 // Parameters:
-//   - s: a string representing a hexadecimal number.
+//   - scalar: bytes slice representing the scalar value to convert.
+//   - buf: a pointer to a slice of integers representing the bit array.
 //
 // Returns:
-//   - *big.Int: a pointer to a big.Int representing the converted number.
-func NewInt(s string) *big.Int {
-	num, ok := new(big.Int).SetString(s, 16)
-	if !ok {
-		panic("failed creating number from hex")
+//   - The function does not return anything. The bit array is stored in the slice pointed to by the buf parameter.
+//
+// If the bit length of scalar doesn't fit in buf, ConvertToBits will panic.
+func ConvertToBits(scalar []byte, buf *[]int) {
+	r := *buf
+	scalarlen := len(scalar)
+	if len(r) < scalarlen*8 {
+		panic("buffer too small to fit value")
 	}
-	return num
+	for i := scalarlen - 1; i >= 0; i-- {
+		for j := 7; j >= 0; j-- {
+			r[(scalarlen-1-i)*8+j] = int(scalar[i] >> uint(j) & 0x01)
+		}
+	}
+	*buf = r
+}
+
+// NewFieldVal creates a new FieldVal object from a hexadecimal string.
+//
+// Parameters:
+//   - s: a string representing the hexadecimal value.
+//
+// Returns:
+//   - A pointer to a FieldVal object.
+func NewFieldVal(s string) *FieldVal {
+	bs, err := hex.DecodeString(s)
+	if err != nil {
+		panic(err)
+	}
+	var fv FieldVal
+	fv.SetByteSlice(bs)
+	return &fv
+}
+
+// NewModNScalar creates a new ModNScalar object from a hexadecimal string.
+//
+// Parameters:
+//   - s: a string representing the hexadecimal value.
+//
+// Returns:
+//   - A pointer to a ModNScalar object.
+func NewModNScalar(s string) *ModNScalar {
+	var scalar ModNScalar
+	bs, err := hex.DecodeString(s)
+	if err != nil {
+		panic(err)
+	}
+	scalar.SetByteSlice(bs)
+	return &scalar
 }
 
 // NewStr returns a pointer to the input string.
@@ -715,34 +791,24 @@ func NewStr(s string) *string {
 	return &s
 }
 
-// ValidKey checks if the given big.Int scalar is a valid key.
+// ValidateKey checks if the given ModNScalar is a valid key.
 //
 // Parameters:
-//   - scalar: a pointer to a big.Int representing the scalar value.
+//   - b: a pointer to a byte slice representing the raw private key.
 //
 // Returns:
-//   - bool: true if the scalar is valid, false otherwise.
-func ValidKey(scalar *big.Int) bool {
-	if scalar == nil {
-		return false
+//   - *ModNScalar: a pointer to a ModNScalar object if the scalar is not zero, nil otherwise.
+//   - bool: true if the scalar is not zero, false otherwise.
+func ValidateKey(b *[]byte) (*ModNScalar, bool) {
+	var scalar ModNScalar
+	if b == nil {
+		return nil, false
 	}
-	return scalar.Cmp(zero) == 1 && scalar.Cmp(Secp256k1.NCurve) == -1
-}
-
-// IsOdd checks if the given big.Int is odd.
-//
-// It takes a pointer to a big.Int as a parameter.
-// It returns a boolean indicating whether the number is odd or not.
-func IsOdd(n *big.Int) bool {
-	return n.Bit(0) == 1
-}
-
-// ModInverse calculates the modular inverse of a number.
-//
-// It takes two parameters: n and mod, both of type *big.Int.
-// The function returns a pointer to a new *big.Int representing the modular inverse of n modulo mod.
-func ModInverse(n, mod *big.Int) *big.Int {
-	return new(big.Int).ModInverse(n, mod)
+	overflow := scalar.SetByteSlice(*b)
+	if overflow || scalar.IsZero() {
+		return nil, false
+	}
+	return &scalar, true
 }
 
 // DoubleSHA256 calculates the SHA256 hash of the input byte slice twice.
@@ -771,7 +837,7 @@ func DoubleSHA256(b []byte) []byte {
 //   - b: input byte slice to be hashed.
 //
 // Returns:
-// The RIPEMD160 hashed byte slice.
+// The Ripemd160 hashed byte slice.
 func Ripemd160SHA256(b []byte) []byte {
 	h := sha256.New()
 	r := ripemd160.New()
@@ -789,14 +855,28 @@ func Ripemd160SHA256(b []byte) []byte {
 //   - s: variadic parameter containing byte slices to be concatenated.
 //
 // Returns a byte slice.
-func joinBytes(s ...[]byte) []byte {
+func joinBytes(bs ...[]byte) []byte {
 	n := 0
-	for _, v := range s {
+	for _, v := range bs {
 		n += len(v)
 	}
-
 	b, i := make([]byte, n), 0
-	for _, v := range s {
+	for _, v := range bs {
+		i += copy(b[i:], v)
+	}
+	return b
+}
+
+// joinBytesFixed concatenates the byte slices in s into a single byte slice of a fixed size.
+//
+// Parameters:
+//   - size: the fixed size of the resulting byte slice.
+//   - bs: variadic parameter containing byte slices to be concatenated.
+//
+// Returns a byte slice of the specified size.
+func joinBytesFixed(size int, bs ...[]byte) []byte {
+	b, i := make([]byte, size), 0
+	for _, v := range bs {
 		i += copy(b[i:], v)
 	}
 	return b
@@ -805,12 +885,12 @@ func joinBytes(s ...[]byte) []byte {
 // createRawPubKey generates a raw public key from a given private key.
 //
 // Parameters:
-//   - privKey: a pointer to a big.Int representing the private key.
+//   - privKey: a pointer to a ModNScalar representing the private key.
 //
 // Returns:
 //   - a pointer to a Point representing the raw public key.
 //   - an error if the generated point is not on the curve.
-func createRawPubKey(privKey *big.Int) (*Point, error) {
+func createRawPubKey(privKey *ModNScalar) (*Point, error) {
 	var p JacobianPoint
 	rawPubKey := p.Mul(privKey, nil).ToAffine()
 	if !rawPubKey.Valid() {
@@ -830,46 +910,55 @@ func createRawPubKey(privKey *big.Int) (*Point, error) {
 // Returns:
 //   - a byte slice representing the public key in the specified format.
 func createPubKey(rawPubKey *Point, uncompressed bool) []byte {
-	var prefix uint8
-	buf := make([]byte, 65)
 	if uncompressed {
-		buf[0] = 0x04
-		rawPubKey.X.FillBytes(buf[1:33])
-		rawPubKey.Y.FillBytes(buf[33:])
-		return buf
+		return joinBytesFixed(65, []byte{0x04}, rawPubKey.X.Bytes()[:], rawPubKey.Y.Bytes()[:])
 	}
-	if IsOdd(rawPubKey.Y) {
-		prefix = 0x03
-	} else {
-		prefix = 0x02
+	prefix := []byte{0x02}
+	if rawPubKey.Y.IsOdd() {
+		prefix = []byte{0x03}
 	}
-	buf[0] = prefix
-	rawPubKey.X.FillBytes(buf[1:33])
-	return buf[:33]
+	return joinBytesFixed(33, prefix, rawPubKey.X.Bytes()[:])
 }
 
-func calculateTweak(rawPubKey *Point) *big.Int {
-	var tweak big.Int
-	buf := make([]byte, 32)
+// calculateTweak generates a tweak value for a given raw public key.
+//
+// Parameters:
+//   - rawPubKey: a pointer to a Point representing the raw public key.
+//
+// Returns:
+//   - a pointer to a ModNScalar representing the tweak value.
+//
+// https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
+func calculateTweak(rawPubKey *Point) *ModNScalar {
+	var tweak ModNScalar
 	h1 := sha256.New()
 	h2 := sha256.New()
 	h1.Write([]byte("TapTweak"))
-	h2.Write(joinBytes([][]byte{h1.Sum(nil), h1.Sum(nil), rawPubKey.X.FillBytes(buf)}...))
-	tweak.SetBytes(h2.Sum(nil))
+	h2.Write(joinBytesFixed(96, h1.Sum(nil), h1.Sum(nil), rawPubKey.X.Bytes()[:]))
+	tweak.SetByteSlice(h2.Sum(nil))
 	return &tweak
 }
 
+// createTweakedPubKey generates a tweaked public key from a given raw public key.
+//
+// Parameters:
+//   - rawPubKey: a pointer to a Point representing the raw public key.
+//
+// Returns:
+//   - a byte slice representing the tweaked public key.
+//
+// https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
 func createTweakedPubKey(rawPubKey *Point) []byte {
 	var q JacobianPoint
 	tweak := calculateTweak(rawPubKey)
-	p := &Point{X: new(big.Int).Set(rawPubKey.X), Y: new(big.Int).Set(rawPubKey.Y)}
-	if IsOdd(p.Y) {
-		p.Y.Sub(Secp256k1.PCurve, p.Y)
+	p := &Point{X: *new(FieldVal).Set(&rawPubKey.X), Y: *new(FieldVal).Set(&rawPubKey.Y)}
+	if p.Y.IsOdd() {
+		p.Y.Negate(1)
 	}
 	q.Add(p.ToJacobian(), q.Mul(tweak, nil))
 	qa := q.ToAffine()
-	if IsOdd(qa.Y) {
-		qa.Y.Sub(Secp256k1.PCurve, qa.Y)
+	if qa.Y.IsOdd() {
+		qa.Y.Negate(1)
 	}
 	return createPubKey(qa, false)[1:]
 }
@@ -885,8 +974,8 @@ func checkSum(v []byte) []byte {
 	return DoubleSHA256(v)[:4]
 }
 
-func validCheckSum(ver, privKey, checkSum []byte) bool {
-	return bytes.Equal(DoubleSHA256(joinBytes([][]byte{ver, privKey}...))[:4], checkSum)
+func validChecksum(ver, privKey, checkSum []byte) bool {
+	return bytes.Equal(DoubleSHA256(joinBytes(ver, privKey))[:4], checkSum)
 }
 
 // createAddress generates a Bitcoin address from a given public key.
@@ -897,8 +986,8 @@ func validCheckSum(ver, privKey, checkSum []byte) bool {
 // Returns:
 //   - a string representing the Bitcoin address.
 func createAddress(pubKey []byte) string {
-	address := joinBytes([][]byte{{0x00}, Ripemd160SHA256(pubKey)}...)
-	return base58.Encode(joinBytes([][]byte{address, checkSum(address)}...))
+	address := joinBytesFixed(21, []byte{0x00}, Ripemd160SHA256(pubKey))
+	return base58.Encode(joinBytesFixed(25, address, checkSum(address)))
 }
 
 // createNestedSegwit generates a nested SegWit Bitcoin address from a given public key.
@@ -909,8 +998,8 @@ func createAddress(pubKey []byte) string {
 // Returns:
 //   - a string representing the nested SegWit Bitcoin address.
 func createNestedSegwit(pubKey []byte) string {
-	address := joinBytes([][]byte{{0x05}, Ripemd160SHA256(joinBytes([][]byte{{0x00, 0x14}, Ripemd160SHA256(pubKey)}...))}...)
-	return base58.Encode(joinBytes([][]byte{address, checkSum(address)}...))
+	address := joinBytesFixed(21, []byte{0x05}, Ripemd160SHA256(joinBytesFixed(22, []byte{0x00, 0x14}, Ripemd160SHA256(pubKey))))
+	return base58.Encode(joinBytesFixed(25, address, checkSum(address)))
 }
 
 // createNativeSegwit generates a native SegWit Bitcoin address from a given public key.
@@ -935,6 +1024,13 @@ func createNativeSegwit(pubKey []byte) string {
 	return addr
 }
 
+// createTaproot generates a Taproot Bitcoin address from a given public key.
+//
+// Parameters:
+//   - pubKey: a byte slice representing the public key.
+//
+// Returns:
+//   - a string representing the Taproot Bitcoin address.
 func createTaproot(pubKey []byte) string {
 	converted, err := bech32.ConvertBits(pubKey, 8, 5, true)
 	if err != nil {
@@ -994,62 +1090,59 @@ func varInt(length uint64) []byte {
 // https://bitcoin.stackexchange.com/questions/77324/how-are-bitcoin-signed-messages-generated
 func msgMagic(msg string) []byte {
 	message := []byte(msg)
-	return joinBytes([][]byte{{0x18}, []byte("Bitcoin Signed Message:\n"), varInt(uint64(len(message))), message}...)
+	return joinBytes([]byte{0x18}, []byte("Bitcoin Signed Message:\n"), varInt(uint64(len(message))), message)
 }
 
 // signed calculates the signature of a message using the provided private key.
 //
 // Parameters:
-//   - privKey: a pointer to a big.Int representing the private key.
-//   - msg: a pointer to a hash of a signature (usually double sha256 of a message with 'msgMagic' applied).
+//   - msg: a hash of a signature (usually double sha256 of a message with 'msgMagic' applied).
+//   - privKey: a pointer to a ModNScalar representing the private key.
 //   - k: nonce that comes from random (SystemRandom) or pseudorandom source (RFC6979).
 //
 // Returns:
 //   - *Signature: a pointer to a Signature struct containing the calculated signature components.
-func signed(msg, privKey, k *big.Int) *Signature {
+func signed(msg []byte, privKey, k *ModNScalar) *Signature {
 	var (
-		r, s big.Int
-		p    JacobianPoint
+		r, s, e, kinv ModNScalar
+		p             JacobianPoint
+		buf           [32]byte
 	)
-	if !ValidKey(k) {
-		return nil
-	}
 	point := p.Mul(k, nil).ToAffine()
-	r.Set(point.X).Mod(&r, Secp256k1.NCurve)
-	if r.Cmp(zero) == 0 || point.ToJacobian().Eq(IdentityPoint) {
+	point.X.PutBytes(&buf)
+	r.SetBytes(&buf)
+	if r.IsZero() {
 		return nil
 	}
-	s.Mul(ModInverse(k, Secp256k1.NCurve), s.Add(msg, s.Mul(privKey, &r))).Mod(&s, Secp256k1.NCurve)
-	if s.Cmp(zero) == 0 {
+	e.SetByteSlice(msg)
+	kinv.InverseValNonConst(k)
+	s.Mul2(privKey, &r).Add(&e).Mul(&kinv)
+	if s.IsZero() {
 		return nil
 	}
-	if s.Cmp(new(big.Int).Rsh(Secp256k1.NCurve, 1)) == 1 {
-		s.Sub(Secp256k1.NCurve, &s)
+	if s.IsOverHalfOrder() {
+		s.Negate()
 	}
-	return &Signature{R: &r, S: &s}
+	return NewSignature(&r, &s)
 }
 
 // sign generates a signature based on the provided private key and message.
 //
 // Parameters:
-//   - privKey: a pointer to a big.Int representing the private key.
-//   - msg: a pointer to a big.Int representing the message.
+//   - msg: a hash of a signature (usually double sha256 of a message with 'msgMagic' applied).
+//   - privKey: a pointer to a ModNScalar representing the private key.
 //
 // Returns:
 //   - *Signature: a pointer to a Signature struct containing the generated signature.
 //
 // https://learnmeabitcoin.com/technical/ecdsa#sign
-func sign(privKey, msg *big.Int) *Signature {
+func sign(msg []byte, privKey *ModNScalar) *Signature {
 	var (
-		k   *big.Int
-		err error
+		k   *ModNScalar
 		sig *Signature
 	)
 	for {
-		k, err = generate()
-		if err != nil {
-			panic(err)
-		}
+		k = generate()
 		sig = signed(msg, privKey, k)
 		if sig != nil {
 			return sig
@@ -1057,112 +1150,52 @@ func sign(privKey, msg *big.Int) *Signature {
 	}
 }
 
-// bitsToInt converts a byte slice to a big.Int and adjusts its length to match qLen.
-//
-// Parameters:
-//   - b: a byte slice to be converted to a big.Int.
-//   - qLen: an integer representing the desired length.
-//
-// Returns:
-//   - *big.Int: the converted big.Int value.
-//
-// https://www.rfc-editor.org/rfc/rfc6979 section 2.3.2.
-func bitsToInt(b []byte, qLen int) *big.Int {
-	bLen := len(b) << 3
-	bInt := new(big.Int).SetBytes(b)
-	if bLen > qLen {
-		bInt.Rsh(bInt, uint(bLen-qLen))
-	}
-	return bInt
-}
-
-// intToOct converts a big.Int to a byte slice of a specified length.
-//
-// Parameters:
-//   - x: The big.Int to convert.
-//   - roLen: The desired length of the resulting byte slice.
-//
-// Returns:
-//   - []byte: The byte slice representation of the big.Int.
-//
-// https://www.rfc-editor.org/rfc/rfc6979 section 2.3.3.
-func intToOct(x *big.Int, roLen int) []byte {
-	xoLen := x.BitLen() >> 3
-	if xoLen < roLen {
-		buf := make([]byte, roLen)
-		return x.FillBytes(buf)
-	}
-	if xoLen > roLen {
-		buf := make([]byte, xoLen)
-		x.FillBytes(buf)
-		return buf[xoLen-roLen:]
-	}
-	return x.Bytes()
-}
-
-// bitsToOct converts a byte slice of bits to an octet slice
-//
-// Parameters:
-//   - b: a byte slice representing the bits to be converted
-//   - q: a big.Int representing the modulus
-//   - qLen: an integer representing the length of the modulus in bits
-//   - roLen: an integer representing the desired length of the octet slice in octets
-//
-// Returns:
-//   - a byte slice representing the converted octets
-//
-// https://www.rfc-editor.org/rfc/rfc6979 section 2.3.4.
-func bitsToOct(b []byte, q *big.Int, qLen int, roLen int) []byte {
-	var z1, z2 big.Int
-	z1.Set(bitsToInt(b, qLen))
-	z2.Sub(&z1, q)
-	if z2.Cmp(zero) == -1 {
-		z2 = z1
-	}
-	return intToOct(&z2, roLen)
-}
-
 // rfcSign generates a signature for a given message using the RFC6979 algorithm.
 //
 // Parameters:
-//   - x: a pointer to a big.Int representing the private key.
-//   - msg: a pointer to a big.Int representing the message.
+//   - msg: a byte slice representing the message.
+//   - privKey: a pointer to a ModNScalar representing the private key.
 //
 // Returns:
 //   - *Signature: a pointer to a Signature struct containing the calculated signature.
-func rfcSign(x, msg *big.Int) *Signature {
-	var (
-		q      big.Int
-		k      *big.Int
-		K_, V_ hash.Hash
-		K, V   []byte
-		sig    *Signature
+func rfcSign(msg []byte, privKey *ModNScalar) *Signature {
+	const (
+		privKeyLen = 32
+		msgLen     = 32
 	)
+	var keyBuf [privKeyLen + msgLen]byte
 	// https://www.rfc-editor.org/rfc/rfc6979 section 3.2.
-	q.Set(Secp256k1.NCurve)
-	qLen := q.BitLen()
-	qoLen := qLen >> 3
-	roLen := (qLen + 7) >> 3
+	var pb [32]byte
+	privKey.PutBytes(&pb)
+	privKeyBytes := pb[:]
+	if len(privKeyBytes) > privKeyLen {
+		privKeyBytes = privKeyBytes[:privKeyLen]
+	}
+	if len(msg) > msgLen {
+		msg = msg[:msgLen]
+	}
+	offset := privKeyLen - len(privKeyBytes)
+	offset += copy(keyBuf[offset:], privKeyBytes)
+	offset += msgLen - len(msg)
+	offset += copy(keyBuf[offset:], msg)
+
+	key := keyBuf[:offset]
 	// step a is omitted since we already have a hash of a message
-	h1 := msg.FillBytes(make([]byte, 32))
 	// step b
-	V = bytes.Repeat([]byte{0x01}, 32)
+	V := bytes.Repeat([]byte{0x01}, 32)
 	// step c
-	K = bytes.Repeat([]byte{0x00}, 32)
+	K := bytes.Repeat([]byte{0x00}, 32)
 	// step d
-	mSuffix := joinBytes([][]byte{intToOct(x, roLen), bitsToOct(h1, &q, qLen, roLen)}...)
-	m1 := joinBytes([][]byte{{0x00}, mSuffix}...)
-	m2 := joinBytes([][]byte{{0x01}, mSuffix}...)
-	K_ = hmac.New(sha256.New, K)
-	K_.Write(joinBytes([][]byte{V, m1}...))
+	K_ := hmac.New(sha256.New, K)
+	K_.Write(joinBytesFixed(33+len(key), V, []byte{0x00}, key))
 	K = K_.Sum(nil)
 	// step e
-	V_ = hmac.New(sha256.New, K)
+	V_ := hmac.New(sha256.New, K)
 	V_.Write(V)
 	V = V_.Sum(nil)
 	// step f
 	K_ = hmac.New(sha256.New, K)
-	K_.Write(joinBytes([][]byte{V, m2}...))
+	K_.Write(joinBytesFixed(33+len(key), V, []byte{0x01}, key))
 	K = K_.Sum(nil)
 	// step g
 	V_ = hmac.New(sha256.New, K)
@@ -1170,16 +1203,13 @@ func rfcSign(x, msg *big.Int) *Signature {
 	V = V_.Sum(nil)
 	// step h
 	for {
-		var T []byte
-		for len(T) < qoLen {
-			V_ = hmac.New(sha256.New, K)
-			V_.Write(V)
-			V = V_.Sum(nil)
-			T = joinBytes([][]byte{T, V}...)
-		}
-		k = bitsToInt(T, qLen)
-		if sig = signed(msg, x, k); sig != nil {
-			return sig
+		V_ = hmac.New(sha256.New, K)
+		V_.Write(V)
+		V = V_.Sum(nil)
+		if k, ok := ValidateKey(&V); ok {
+			if sig := signed(msg, privKey, k); sig != nil {
+				return sig
+			}
 		}
 		// if k was invalid (sig == nil), continue with algorithm
 		K_ = hmac.New(sha256.New, K)
@@ -1229,10 +1259,27 @@ func deriveAddress(pubKey []byte, addrType string) (addr string, ver int, err er
 //
 // Returns:
 //   - header: the header byte of the signature.
-//   - r: a pointer to a big.Int representing the r value of the signature.
-//   - s: a pointer to a big.Int representing the s value of the signature.
-func splitSignature(sig []byte) (header byte, r, s *big.Int) {
-	return sig[0], new(big.Int).SetBytes(sig[1:33]), new(big.Int).SetBytes(sig[33:])
+//   - r: a pointer to a ModNScalar representing the r value of the signature.
+//   - s: a pointer to a ModNScalar representing the s value of the signature.
+func splitSignature(sig []byte) (byte, *ModNScalar, *ModNScalar, error) {
+	header := sig[0]
+	if header < headers[0][0] || header > headers[4][3] {
+		return 0, nil, nil, &SignatureError{Message: "header byte out of range"}
+	}
+	var (
+		overflow bool
+		r        ModNScalar
+	)
+	overflow = r.SetByteSlice(sig[1:33])
+	if overflow || r.IsZero() {
+		return 0, nil, nil, &SignatureError{Message: "r-value out of range"}
+	}
+	var s ModNScalar
+	overflow = s.SetByteSlice(sig[33:])
+	if overflow || s.IsZero() {
+		return 0, nil, nil, &SignatureError{Message: "s-value out of range"}
+	}
+	return header, &r, &s, nil
 }
 
 // VerifyMessage verifies a signed message using the provided address, message, signature, and electrum flag.
@@ -1247,28 +1294,17 @@ func splitSignature(sig []byte) (header byte, r, s *big.Int) {
 //   - a pointer to a VerifyMessageResult struct containing the verification result and the hex-encoded public key.
 //   - error: an error if any occurred during the verification process.
 func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult, error) {
-	var (
-		x, y, alpha, beta, bt, z, e big.Int
-		p, q, Q, pk                 JacobianPoint
-	)
-	dSig := make([]byte, base64.StdEncoding.DecodedLen(len(message.Signature)))
-	n, err := base64.StdEncoding.Decode(dSig, message.Signature)
+	dsig := make([]byte, base64.StdEncoding.DecodedLen(len(message.Signature)))
+	n, err := base64.StdEncoding.Decode(dsig, message.Signature)
 	if err != nil {
 		return nil, &SignatureError{Message: "decode error", Err: err}
 	}
 	if n != 65 {
 		return nil, &SignatureError{Message: "signature must be 65 bytes long"}
 	}
-
-	header, r, s := splitSignature(dSig[:n])
-	if header < 27 || header > 46 {
-		return nil, &SignatureError{Message: "header byte out of range"}
-	}
-	if r.Cmp(Secp256k1.NCurve) >= 0 || r.Cmp(zero) == 0 {
-		return nil, &SignatureError{Message: "r-value out of range"}
-	}
-	if s.Cmp(Secp256k1.NCurve) >= 0 || s.Cmp(zero) == 0 {
-		return nil, &SignatureError{Message: "s-value out of range"}
+	header, r, s, err := splitSignature(dsig[:n])
+	if err != nil {
+		return nil, err
 	}
 	uncompressed := false
 	addrType := "legacy"
@@ -1286,23 +1322,39 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 	} else {
 		uncompressed = true
 	}
-	recId := big.NewInt(int64(header - 27))
-	x.Add(r, x.Mul(Secp256k1.NCurve, new(big.Int).Rsh(recId, 1)))
-	alpha.Exp(&x, three, nil).Add(&alpha, Secp256k1.BCurve).Mod(&alpha, Secp256k1.PCurve)
-	beta.Exp(&alpha, bt.Add(Secp256k1.PCurve, one).Rsh(&bt, 2), Secp256k1.PCurve)
-	y.Set(&beta)
-	if IsOdd(new(big.Int).Sub(&beta, recId)) {
-		y.Sub(Secp256k1.PCurve, &beta)
+	recId := header - 27
+	var buf [32]byte
+	r.PutBytes(&buf)
+	var R FieldVal
+	R.SetBytes(&buf)
+	if recId&2 != 0 {
+		if R.IsGtOrEqPrimeMinusOrder() {
+			return nil, &SignatureError{Message: "invalid signature: signature R + N >= P"}
+		}
+		R.Add(order)
 	}
-	R := NewJacobianPoint(&x, &y, one)
-	mBytes := msgMagic(message.Data)
-	z.SetBytes(DoubleSHA256(mBytes))
-	e.Set(new(big.Int).Neg(&z)).Mod(&e, Secp256k1.NCurve)
-	p.Mul(s, R)
-	q.Mul(&e, Secp256k1.GenPoint)
-	Q.Add(&p, &q)
-	rawPubKey := pk.Mul(ModInverse(r, Secp256k1.NCurve), &Q).ToAffine()
-	pubKey := createPubKey(rawPubKey, uncompressed)
+	oddY := recId&1 != 0
+	var y FieldVal
+	if valid := secp256k1.DecompressY(&R, oddY, &y); !valid {
+		return nil, &SignatureError{Message: "invalid signature: not for a valid curve point"}
+	}
+	var X JacobianPoint
+	X.X.Set(R.Normalize())
+	X.Y.Set(y.Normalize())
+	X.Z.SetInt(1)
+	var e ModNScalar
+	e.SetByteSlice(DoubleSHA256(msgMagic(message.Data)))
+	w := new(ModNScalar).InverseValNonConst(r)
+	u1 := new(ModNScalar).Mul2(&e, w).Negate()
+	u2 := new(ModNScalar).Mul2(s, w)
+	var Q, u1G, u2X JacobianPoint
+	u1G.Mul(u1, nil)
+	u2X.Mul(u2, &X)
+	Q.Add(&u1G, &u2X)
+	if Q.Eq(IdentityPoint) {
+		return nil, &SignatureError{Message: "invalid signature: recovered pubkey is the point at infinity"}
+	}
+	pubKey := createPubKey(Q.ToAffine(), uncompressed)
 	if electrum && !uncompressed {
 		for _, addrType := range addressTypes {
 			addr, _, err := deriveAddress(pubKey, addrType)
@@ -1344,7 +1396,7 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 // deterministic flag, and electrum flag.
 //
 // Parameters:
-//   - pk: A pointer to a PrivateKey struct representing the private key.
+//   - pk: A pointer to a privatekey struct representing the private key.
 //     Compressed private key will produce compressed public key and address.
 //     Uncompressed private key will only produce one address type - uncompressed legacy address
 //   - addrType: A string representing the address type. It can be either p2pkh (compressed and uncompressed),
@@ -1357,42 +1409,40 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 // Returns:
 //   - A pointer to a BitcoinMessage struct representing the signed message.
 //   - An error if there was a problem signing the message.
-func SignMessage(pk *PrivateKey, addrType, message string, deterministic, electrum bool) (*BitcoinMessage, error) {
+func SignMessage(pk *privatekey, addrType, message string, deterministic, electrum bool) (*BitcoinMessage, error) {
 	var (
-		r, s, msg     big.Int
 		sig           *Signature
 		signedMessage BitcoinMessage
 	)
-	mBytes := msgMagic(message)
-	msg.SetBytes(DoubleSHA256(mBytes))
-	rawPubKey, err := createRawPubKey(pk.Raw)
+	msg := DoubleSHA256(msgMagic(message))
+	rawPubKey, err := createRawPubKey(pk.raw)
 	if err != nil {
 		panic(err)
 	}
-	pubKey := createPubKey(rawPubKey, pk.Uncompressed)
+	pubKey := createPubKey(rawPubKey, pk.uncompressed)
 	if !deterministic {
-		sig = sign(pk.Raw, &msg)
+		sig = sign(msg, pk.raw)
 	} else {
-		sig = rfcSign(pk.Raw, &msg)
+		sig = rfcSign(msg, pk.raw)
 	}
 	address, ver, err := deriveAddress(pubKey, addrType)
 	if err != nil {
 		return nil, err
 	}
 	if electrum {
-		if pk.Uncompressed {
+		if pk.uncompressed {
 			ver = 0
 		} else {
 			ver = 1
 		}
 	}
-	buf := make([]byte, 65)
-	r.Set(sig.R).FillBytes(buf[1:33])
-	s.Set(sig.S).FillBytes(buf[33:])
+	var buf [65]byte
+	sig.r.PutBytesUnchecked(buf[1:33])
+	sig.s.PutBytesUnchecked(buf[33:65])
 	for _, header := range headers[ver] {
 		buf[0] = header
 		signature := make([]byte, base64.StdEncoding.EncodedLen(len(buf)))
-		base64.StdEncoding.Encode(signature, buf)
+		base64.StdEncoding.Encode(signature, buf[:])
 		signedMessage.Address = address
 		signedMessage.Data = message
 		signedMessage.Signature = signature
@@ -1420,6 +1470,7 @@ func PrintMessage(bm *BitcoinMessage) {
 	fmt.Println(endSignature)
 }
 
+// trimCRLF removes leading and trailing carriage return and line feed characters from the input string.
 func trimCRLF(s string) string {
 	msg := strings.TrimPrefix(s, "\r")
 	msg = strings.TrimPrefix(msg, "\n")
@@ -1428,13 +1479,13 @@ func trimCRLF(s string) string {
 	return msg
 }
 
-// ParseRFCMessage parses a given message (RFC2440-like format) string into a BitcoinMessage struct.
-//
-// Parameters:
-//   - m: a string representing the message to be parsed.
-//
-// Returns:
-//   - *BitcoinMessage: a pointer to a BitcoinMessage struct containing the parsed message data.
+// // ParseRFCMessage parses a given message (RFC2440-like format) string into a BitcoinMessage struct.
+// //
+// // Parameters:
+// //   - m: a string representing the message to be parsed.
+// //
+// // Returns:
+// //   - *BitcoinMessage: a pointer to a BitcoinMessage struct containing the parsed message data.
 func ParseRFCMessage(m string) *BitcoinMessage {
 	ind1 := strings.Index(m, beginSignedMessage)
 	ind2 := strings.Index(m, beginSignature)
@@ -1455,23 +1506,20 @@ func ParseRFCMessage(m string) *BitcoinMessage {
 		Signature: []byte(signature[len(signature)-1])}
 }
 
-// CreateWallets generates a specified number of wallets and either prints them to the console or writes them to a file.
+// CreateWallets generates a specified number of wallets and either prints them to stdout or writes them to a file.
 //
 // Parameters:
-// - n: the number of wallets to generate.
-// - path: the path to the file where the wallets should be written. If empty, the wallets will be printed to the console.
-//
-// Returns:
-// None.
+//   - n: the number of wallets to generate.
+//   - path: the path to the file where the wallets should be written. If empty, the wallets will be printed to stdout.
 func CreateWallets(n int, path string) {
 	var wg sync.WaitGroup
 	jobs := make(chan struct{}, runtime.NumCPU())
-	walletChan := make(chan *Wallet)
+	walletChan := make(chan *wallet)
 	done := make(chan struct{})
 	go func() {
 		if path == "" {
 			for w := range walletChan {
-				fmt.Println(w)
+				os.Stdout.WriteString(w.String() + "\n")
 			}
 		} else {
 			f, err := os.OpenFile(filepath.FromSlash(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -1480,7 +1528,7 @@ func CreateWallets(n int, path string) {
 				os.Exit(1)
 			}
 			for w := range walletChan {
-				if _, err := f.WriteString(fmt.Sprintln(w)); err != nil {
+				if _, err := f.WriteString(w.String() + "\n"); err != nil {
 					f.Close() // ignore error; Write error takes precedence
 					fmt.Fprintln(os.Stderr, err)
 					os.Exit(1)
