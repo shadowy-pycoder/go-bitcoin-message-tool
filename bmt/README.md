@@ -16,24 +16,24 @@ import (
 	"github.com/shadowy-pycoder/go-bitcoin-message-tool/bmt"
 )
 
-    func main() {
-        wifStr := bmt.NewStr("Kx4XofogMJhEdvHGSMRdztgEg3BBHs9B18yv9uBe1VphNcpKyMnF")
-        w, _ := bmt.CreateNewWallet(nil, wifStr)
-        fmt.Println(w)
-        fmt.Println()
-        fmt.Println(w.PrivateKey().Hex())
-        fmt.Println(w.PrivateKey().Wif())
-        fmt.Println(w.PublicKey())
-        fmt.Println(w.PublicKeyRaw())
-        fmt.Println(w.LegacyAddress())
-        fmt.Println(w.SegwitAddress())
-        fmt.Println(w.NestedSegwitAddress())
-        fmt.Println(w.TaprootAddress())
+func main() {
+    wifStr := bmt.NewStr("Kx4XofogMJhEdvHGSMRdztgEg3BBHs9B18yv9uBe1VphNcpKyMnF")
+    w, _ := bmt.CreateNewWallet(nil, wifStr)
+    fmt.Println(w)
+    fmt.Println()
+    fmt.Println(w.PrivateKey().Hex())
+    fmt.Println(w.PrivateKey().Wif())
+    fmt.Println(w.PublicKey())
+    fmt.Println(w.PublicKeyRaw())
+    fmt.Println(w.LegacyAddress())
+    fmt.Println(w.SegwitAddress())
+    fmt.Println(w.NestedSegwitAddress())
+    fmt.Println(w.TaprootAddress())
 
-        var p bmt.JacobianPoint
-        p.Mul(w.PrivateKey().Hex(), nil)
-        fmt.Println(p.ToAffine().Eq(w.PublicKeyRaw()))
-    }
+    var p bmt.JacobianPoint
+    p.Mul(w.PrivateKey().Hex(), nil)
+    fmt.Println(p.ToAffine().Eq(w.PublicKeyRaw()))
+}
 ```
 ```shell
 Private Key (HEX): 191d8aa8b3e52eaa12b9754bf56d118d754602a3b74701678b3d63a93a3b27a2
