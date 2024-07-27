@@ -453,7 +453,7 @@ func (sig *Signature) S() ModNScalar {
 
 type BitcoinMessage struct {
 	Address   string
-	Data      string
+	Payload   string
 	Signature []byte
 }
 
@@ -470,15 +470,16 @@ type privatekey struct {
 }
 
 // generate generates a random value within the range of the secp256k1 group order.
-func generate() *ModNScalar {
+func generate(scalar *ModNScalar) {
 	buf := make([]byte, 32)
 	for {
 		if _, err := rand.Read(buf); err != nil {
 			panic(err)
 		}
-		if scalar, ok := ValidateKey(&buf); ok {
-			return scalar
+		if ValidateKey(&buf, scalar) {
+			return
 		}
+		scalar.Zero()
 	}
 
 }
@@ -509,16 +510,18 @@ func NewPrivateKey(raw *[]byte, wif *string) (*privatekey, error) {
 		return nil, &PrivateKeyError{Message: "cannot specify both raw and wif"}
 	}
 	if raw == nil && wif == nil {
-		pk.raw = generate()
+		var scalar ModNScalar
+		generate(&scalar)
+		pk.raw = &scalar
 		pk.uncompressed = false
 		encoded, _ := pk.hexToWif(pk.uncompressed)
 		pk.wif = encoded
 	} else if wif == nil {
-		scalar, ok := ValidateKey(raw)
-		if !ok {
+		var scalar ModNScalar
+		if !ValidateKey(raw, &scalar) {
 			return nil, &PrivateKeyError{Message: "scalar is out of range"}
 		}
-		pk.raw = scalar
+		pk.raw = &scalar
 		pk.uncompressed = false
 		encoded, _ := pk.hexToWif(pk.uncompressed)
 		pk.wif = encoded
@@ -588,11 +591,11 @@ func (k *privatekey) wifToHex() (uncompressed bool, err error) {
 		privKeyBytes = priVkey
 		uncompressed = true
 	}
-	scalar, ok := ValidateKey(&privKeyBytes)
-	if !ok {
+	var scalar ModNScalar
+	if !ValidateKey(&privKeyBytes, &scalar) {
 		return false, &PrivateKeyError{Message: "scalar is out of range"}
 	}
-	k.raw = scalar
+	k.raw = &scalar
 	return uncompressed, nil
 }
 
@@ -722,7 +725,7 @@ func (w *wallet) TaprootAddress() string {
 	return w.taproot
 }
 
-// ConvertToBits converts scalar bytes into a little-endian bit array.
+// ConvertToBits converts scalar bytes into a LSB first bit array.
 //
 // Parameters:
 //   - scalar: bytes slice representing the scalar value to convert.
@@ -806,24 +809,16 @@ func NewByteStr(s string) *[]byte {
 	return &bs
 }
 
-// ValidateKey checks if the given ModNScalar is a valid key.
-//
-// Parameters:
-//   - b: a pointer to a byte slice representing the raw private key.
-//
-// Returns:
-//   - *ModNScalar: a pointer to a ModNScalar object if the scalar is not zero, nil otherwise.
-//   - bool: true if the scalar is not zero, false otherwise.
-func ValidateKey(b *[]byte) (*ModNScalar, bool) {
-	var scalar ModNScalar
+// ValidateKey converts byte slice into ModNScalar and checks if it is a valid key.
+func ValidateKey(b *[]byte, scalar *ModNScalar) bool {
 	if b == nil {
-		return nil, false
+		return false
 	}
 	overflow := scalar.SetByteSlice(*b)
 	if overflow || scalar.IsZero() {
-		return nil, false
+		return false
 	}
-	return &scalar, true
+	return true
 }
 
 // DoubleSHA256 calculates the SHA256 hash of the input byte slice twice.
@@ -1153,12 +1148,12 @@ func signed(msg []byte, privKey, k *ModNScalar) *Signature {
 // https://learnmeabitcoin.com/technical/ecdsa#sign
 func sign(msg []byte, privKey *ModNScalar) *Signature {
 	var (
-		k   *ModNScalar
+		k   ModNScalar
 		sig *Signature
 	)
 	for {
-		k = generate()
-		sig = signed(msg, privKey, k)
+		generate(&k)
+		sig = signed(msg, privKey, &k)
 		if sig != nil {
 			return sig
 		}
@@ -1217,12 +1212,13 @@ func rfcSign(msg []byte, privKey *ModNScalar) *Signature {
 	V_.Write(V)
 	V = V_.Sum(nil)
 	// step h
+	var k ModNScalar
 	for {
 		V_ = hmac.New(sha256.New, K)
 		V_.Write(V)
 		V = V_.Sum(nil)
-		if k, ok := ValidateKey(&V); ok {
-			if sig := signed(msg, privKey, k); sig != nil {
+		if ValidateKey(&V, &k) {
+			if sig := signed(msg, privKey, &k); sig != nil {
 				return sig
 			}
 		}
@@ -1358,7 +1354,7 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 	X.Y.Set(y.Normalize())
 	X.Z.SetInt(1)
 	var e ModNScalar
-	e.SetByteSlice(DoubleSHA256(msgMagic(message.Data)))
+	e.SetByteSlice(DoubleSHA256(msgMagic(message.Payload)))
 	w := new(ModNScalar).InverseValNonConst(r)
 	u1 := new(ModNScalar).Mul2(&e, w).Negate()
 	u2 := new(ModNScalar).Mul2(s, w)
@@ -1459,7 +1455,7 @@ func SignMessage(pk *privatekey, addrType, message string, deterministic, electr
 		signature := make([]byte, base64.StdEncoding.EncodedLen(len(buf)))
 		base64.StdEncoding.Encode(signature, buf[:])
 		signedMessage.Address = address
-		signedMessage.Data = message
+		signedMessage.Payload = message
 		signedMessage.Signature = signature
 		result, err := VerifyMessage(&signedMessage, electrum)
 		if err != nil {
@@ -1477,7 +1473,7 @@ func SignMessage(pk *privatekey, addrType, message string, deterministic, electr
 // https://datatracker.ietf.org/doc/html/rfc2440
 func PrintMessage(bm *BitcoinMessage) {
 	fmt.Println(beginSignedMessage)
-	fmt.Println(bm.Data)
+	fmt.Println(bm.Payload)
 	fmt.Println(beginSignature)
 	fmt.Println(bm.Address)
 	fmt.Println()
@@ -1514,11 +1510,21 @@ func ParseRFCMessage(m string) *BitcoinMessage {
 	partOne := m[ind1+len(beginSignedMessage) : ind2]
 	partTwo := m[ind2+len(beginSignature) : ind3]
 	message := trimCRLF(partOne)
-	signature := strings.Split(trimCRLF(partTwo), "\n")
+	sigPart := trimCRLF(partTwo)
+	addrInd := strings.Index(sigPart, "\n")
+	if addrInd == -1 {
+		return nil
+	}
+	address := sigPart[:addrInd]
+	sigInd := strings.LastIndex(sigPart, "\n")
+	if sigInd == -1 {
+		return nil
+	}
+	signature := []byte(trimCRLF(sigPart[sigInd:]))
 	return &BitcoinMessage{
-		Address:   signature[0],
-		Data:      message,
-		Signature: []byte(signature[len(signature)-1])}
+		Address:   address,
+		Payload:   message,
+		Signature: signature}
 }
 
 // CreateWallets generates a specified number of wallets and either prints them to stdout or writes them to a file.
@@ -1664,7 +1670,7 @@ func newCmdVerify() *cmdVerify {
 	vc.fs.BoolVar(&vc.recpub, "r", false, "recover public key")
 	vc.fs.BoolVar(&vc.verbose, "v", false, "show full message")
 	vc.fs.StringVar(&vc.message.Address, "a", "", "ADDRESS bitcoin address")
-	vc.fs.StringVar(&vc.message.Data, "m", "", "[MESSAGE ...] message to verify")
+	vc.fs.StringVar(&vc.message.Payload, "m", "", "[MESSAGE ...] message to verify")
 	vc.fs.Func("s", "SIGNATURE bitcoin signature in base64 format", func(flagValue string) error {
 		vc.message.Signature = []byte(flagValue)
 		return nil
