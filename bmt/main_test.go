@@ -1,7 +1,6 @@
 package bmt
 
 import (
-	"encoding/hex"
 	"fmt"
 	"os"
 	"testing"
@@ -19,14 +18,6 @@ const (
 
 👨‍🦱👩‍🦰🧑‍🦰👨‍🦰👱‍♀️👱👱‍♂️ ☕  ȹȐšԨԢш҂܇ŸΆঈѣֆцѵऀĳݩΙ̩Ɇ`
 )
-
-func ToBytes(s string) *[]byte {
-	bs, err := hex.DecodeString(s)
-	if err != nil {
-		panic(err)
-	}
-	return &bs
-}
 
 // testTempFile creates a temporary file for testing purposes.
 //
@@ -47,28 +38,160 @@ func testTempFile(b *testing.B) (string, func()) {
 	return tf.Name(), func() { os.Remove(tf.Name()) }
 }
 
-// BenchmarkCreateWallets is a benchmark function that measures the performance of the CreateWallets function.
-//
-// Parameters:
-//   - b: a pointer to a testing.B object, used to run the benchmark.
-//
-// Return:
-//   - None.
+// BenchmarkCreateWallets measures the performance of the CreateWallets function.
 func BenchmarkCreateWallets(b *testing.B) {
 	tf, tfclose := testTempFile(b)
 	defer tfclose()
+	b.ResetTimer()
 	CreateWallets(b.N, tf)
 }
 
-// TestCreateNewWalletFromRawPrivateKey is a unit test function that tests the
-// CreateNewWallet function with raw private keys. It verifies that the function
-// correctly creates a new wallet with the expected values.
-//
-// Parameters:
-//   - t: a pointer to a testing.T object, used for testing.
-//
-// Return:
-//   - None.
+// BenchmarkCreateNewWalletFromWif measures the performance of wallet creation
+// with a private key in hexadecimal format.
+func BenchmarkCreateNewWalletFromHex(b *testing.B) {
+	pk := NewByteStr("8fbbb1d88e98f161d9b01e9793bdf1230c18247197205a6cfc06621094de2cc2")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		CreateNewWallet(pk, nil)
+	}
+}
+
+// BenchmarkCreateNewWalletFromWif measures the performance of wallet creation
+// with a private key in WIF format.
+func BenchmarkCreateNewWalletFromWif(b *testing.B) {
+	pk := NewStr("L237JJ2nbSesrbZHwKrXx8nGkp5qoksxhFyiaQuqC6bKv3hsJZDL")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		CreateNewWallet(nil, pk)
+	}
+}
+
+// BenchmarkDblPoint imeasures the performance of the Dbl method of the JacobianPoint struct.
+func BenchmarkDblPoint(b *testing.B) {
+	var point JacobianPoint
+	p := NewJacobianPoint(
+		NewFieldVal("7767299e6e84bddd0666167f51354a7e82536191f1d358314a4eba0f817a5733"),
+		NewFieldVal("958e6100b13a6ebb32187280f587a4b05c90f6586c736ca70c2d23b36d680062"),
+		one)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		point.Dbl(p)
+	}
+}
+
+// BenchmarkAddPoints measures the performance of the Add method of the JacobianPoint struct.
+func BenchmarkAddPoints(b *testing.B) {
+	var point JacobianPoint
+	p1 := NewJacobianPoint(
+		NewFieldVal("7767299e6e84bddd0666167f51354a7e82536191f1d358314a4eba0f817a5733"),
+		NewFieldVal("958e6100b13a6ebb32187280f587a4b05c90f6586c736ca70c2d23b36d680062"),
+		one)
+	p2 := NewJacobianPoint(
+		NewFieldVal("12949c70d1c62c18a580d548efb415fb664927b464cad344322a2bbf4a7f7316"),
+		NewFieldVal("3e3529824df050622e17e02d538d075791580e3db9051a2fce1d8c84cc0043ee"),
+		one)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		point.Add(p1, p2)
+	}
+}
+
+// BenchmarkMulGenPoint measures the performance of the Mul method of the JacobianPoint struct
+// when multiplying a GenPoint with a ModNScalar.
+func BenchmarkMulGenPoint(b *testing.B) {
+	var point JacobianPoint
+	pk := NewModNScalar("c95d8d0f41ef180b28a27e5777f5785e90ee59eb741c668749d0a226f50a851d")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		point.Mul(pk, GenPoint)
+	}
+}
+
+// BenchmarkMulPoint measures the performance of the Mul method of the JacobianPoint struct
+// when multiplying a random point with a ModNScalar.
+func BenchmarkMulPoint(b *testing.B) {
+	var point JacobianPoint
+	pk := NewModNScalar("c95d8d0f41ef180b28a27e5777f5785e90ee59eb741c668749d0a226f50a851d")
+	p := NewJacobianPoint(
+		NewFieldVal("7767299e6e84bddd0666167f51354a7e82536191f1d358314a4eba0f817a5733"),
+		NewFieldVal("958e6100b13a6ebb32187280f587a4b05c90f6586c736ca70c2d23b36d680062"),
+		one)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		point.Mul(pk, p)
+	}
+}
+
+// BenchmarkSignMessageDeterministic measures the performance of SignMessage function
+// when signing deterministically.
+func BenchmarkSignMessageDeterministic(b *testing.B) {
+	pk := NewByteStr("c95d8d0f41ef180b28a27e5777f5785e90ee59eb741c668749d0a226f50a851d")
+	privKey, _ := NewPrivateKey(pk, nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SignMessage(privKey, "segwit", Message, true, false)
+	}
+}
+
+// BenchmarkSignMessageNonDeterministic measures the performance of SignMessage function
+// when signing non-deterministically.
+func BenchmarkSignMessageNonDeterministic(b *testing.B) {
+	pk := NewByteStr("c95d8d0f41ef180b28a27e5777f5785e90ee59eb741c668749d0a226f50a851d")
+	privKey, _ := NewPrivateKey(pk, nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SignMessage(privKey, "segwit", Message, false, false)
+	}
+}
+
+// BenchmarkVerifyMessage measures the performance of VerifyMessage function
+func BenchmarkVerifyMessage(b *testing.B) {
+	bm := &BitcoinMessage{
+		Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+		Data:      FancyMessage,
+		Signature: []byte("KHwAJ0Nmy0NCXm1mZj/S58QDfyuODZg6iSPQjSI9JBlsRAEKaJIJb5cH7s7NcPmX3tWiYTs/6lupP0/uCP2b344=")}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		VerifyMessage(bm, false)
+	}
+}
+
+// BenchmarkConvertToBits measures the performance of the ConvertToBits function.
+func BenchmarkConvertToBits(b *testing.B) {
+	pk := NewByteStr("c95d8d0f41ef180b28a27e5777f5785e90ee59eb741c668749d0a226f50a851d")
+	buf := make([]int, 256)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ConvertToBits(*pk, &buf)
+	}
+}
+
+// BenchmarkValidateKey measures the performance of scalar validation.
+func BenchmarkValidateKey(b *testing.B) {
+	pk := NewByteStr("c95d8d0f41ef180b28a27e5777f5785e90ee59eb741c668749d0a226f50a851d")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ValidateKey(pk)
+	}
+}
+
+// BenchmarkParseRFCMessage measures the performance of parsing in RFC2440-like format.
+func BenchmarkParseRFCMessage(b *testing.B) {
+	message := `-----BEGIN BITCOIN SIGNED MESSAGE-----
+ECDSA is the most fun I have ever experienced
+-----BEGIN BITCOIN SIGNATURE-----
+16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
+
+H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
+-----END BITCOIN SIGNATURE-----`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ParseRFCMessage(message)
+	}
+}
+
+// TestCreateNewWalletFromRawPrivateKey tests the CreateNewWallet function
+// with raw private keys.
 func TestCreateNewWalletFromRawPrivateKey(t *testing.T) {
 	t.Parallel()
 
@@ -79,7 +202,7 @@ func TestCreateNewWalletFromRawPrivateKey(t *testing.T) {
 	}{
 		{
 			name:    "create wallet from provided private key in raw format",
-			privKey: ToBytes("c25c21007c61110c6a2162f30aacb5e94c2a304d9104809814266067da2d78aa"),
+			privKey: NewByteStr("c25c21007c61110c6a2162f30aacb5e94c2a304d9104809814266067da2d78aa"),
 			expected: &wallet{
 				privKey: &privatekey{raw: NewModNScalar("c25c21007c61110c6a2162f30aacb5e94c2a304d9104809814266067da2d78aa"),
 					wif:          NewStr("L3jXBC4CuXiLmjiBxziRmj1mRFm5Fhg1XM5SV6BBnuJvB686Dwxo"),
@@ -98,7 +221,7 @@ func TestCreateNewWalletFromRawPrivateKey(t *testing.T) {
 		},
 		{
 			name:    "create wallet again from provided private key in raw format",
-			privKey: ToBytes("af891cd2de010ece231f843fe2aebe49fdc4481473954fbe6d5f46a0a839b61e"),
+			privKey: NewByteStr("af891cd2de010ece231f843fe2aebe49fdc4481473954fbe6d5f46a0a839b61e"),
 			expected: &wallet{
 				privKey: &privatekey{raw: NewModNScalar("af891cd2de010ece231f843fe2aebe49fdc4481473954fbe6d5f46a0a839b61e"),
 					wif:          NewStr("L36vqtR9oaBBmCJdbtoqyVQQ8UA34YpyBqRRjT9rJSPWMg1Vomzr"),
@@ -125,15 +248,8 @@ func TestCreateNewWalletFromRawPrivateKey(t *testing.T) {
 	}
 }
 
-// TestCreateNewWalletFromRawPrivateKey is a unit test function that tests the
-// CreateNewWallet function with private keys in Wallet Import Format (WIF). It verifies that the function
-// correctly creates a new wallet with the expected values.
-//
-// Parameters:
-//   - t: a pointer to a testing.T object, used for testing.
-//
-// Return:
-//   - None.
+// TestCreateNewWalletFromRawPrivateKey tests the CreateNewWallet function
+// with private keys in Wallet Import Format (WIF).
 func TestCreateNewWalletFromWifPrivateKey(t *testing.T) {
 	t.Parallel()
 
@@ -190,9 +306,7 @@ func TestCreateNewWalletFromWifPrivateKey(t *testing.T) {
 	}
 }
 
-//TestCreateNewWalletErr tests the CreateNewWallet function for error cases.
-
-// It tests different scenarios where the function should return an error message.
+// TestCreateNewWalletErr tests the CreateNewWallet function for error cases.
 func TestCreateNewWalletErr(t *testing.T) {
 	t.Parallel()
 
@@ -204,13 +318,13 @@ func TestCreateNewWalletErr(t *testing.T) {
 	}{
 		{
 			name:       "cannot specify both raw and wif private keys",
-			privKeyRaw: ToBytes("3a6039a639aca056ebd7cf4613a6aa6933a135f4b8e38e413d093814fdc6c1e6"),
+			privKeyRaw: NewByteStr("3a6039a639aca056ebd7cf4613a6aa6933a135f4b8e38e413d093814fdc6c1e6"),
 			privKeyWif: NewStr("KyBBjqHmb5yXS8ZCPjV3J9by9qP8XuZbZMAhRLchfyMVDh24xA6v"),
 			errMsg:     "cannot specify both raw and wif",
 		},
 		{
 			name:       "provided private key is out of range",
-			privKeyRaw: ToBytes("00"),
+			privKeyRaw: NewByteStr("00"),
 			privKeyWif: nil,
 			errMsg:     "scalar is out of range",
 		},
@@ -236,8 +350,6 @@ func TestCreateNewWalletErr(t *testing.T) {
 }
 
 // TestCreateNewWalletRandom tests the CreateNewWallet function with random inputs.
-//
-// It ensures that the generated wallets have no errors and that the WIF of the wallets match.
 func TestCreateNewWalletRandom(t *testing.T) {
 	wallet, err := CreateNewWallet(nil, nil)
 	require.NoError(t, err)
@@ -299,10 +411,7 @@ func TestAddPoints(t *testing.T) {
 	}
 }
 
-// TestDblPoint is a test function to verify the point doubling operation in elliptic curve cryptography.
-//
-// It tests different scenarios including doubling a generator point, a random point, and a point at infinity.
-// The function compares the expected result with the actual result after performing the point doubling operation.
+// TestDblPoint tests the point doubling in Jacobian coordinates.
 func TestDblPoint(t *testing.T) {
 	t.Parallel()
 
@@ -389,6 +498,7 @@ func TestMulPoint(t *testing.T) {
 	}
 }
 
+// TestParseRFCMessage tests parsing bitcoin messages in RFC2440-like format.
 func TestParseRFCMessage(t *testing.T) {
 	t.Parallel()
 
@@ -455,6 +565,7 @@ H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd
 	}
 }
 
+// TestSignMessageDeterministic tests the deterministic (RFC6979) signing of messages.
 func TestSignMessageDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -539,6 +650,7 @@ func TestSignMessageDeterministic(t *testing.T) {
 	}
 }
 
+// TestSignMessageNonDeterministic tests the non-deterministic signing of messages.
 func TestSignMessageNonDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -599,6 +711,7 @@ func TestSignMessageNonDeterministic(t *testing.T) {
 	}
 }
 
+// TestSignMessageErr tests for errors during signing of messages.
 func TestSignMessageErr(t *testing.T) {
 	t.Parallel()
 
@@ -648,6 +761,7 @@ func TestSignMessageErr(t *testing.T) {
 	}
 }
 
+// TestVerifyMessage tests the verification of messages.
 func TestVerifyMessage(t *testing.T) {
 	t.Parallel()
 
@@ -751,6 +865,7 @@ func TestVerifyMessage(t *testing.T) {
 	}
 }
 
+// TestVerifyMessageErr tests for errors during the verification of messages.
 func TestVerifyMessageErr(t *testing.T) {
 	t.Parallel()
 

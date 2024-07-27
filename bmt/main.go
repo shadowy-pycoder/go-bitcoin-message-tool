@@ -340,7 +340,7 @@ func (pt *JacobianPoint) Mul(scalar *ModNScalar, p *JacobianPoint) *JacobianPoin
 	scalarBits := *ptr
 	bs := scalar.Bytes()
 	ConvertToBits(bs[:], &scalarBits)
-	if p == nil {
+	if p.Eq(GenPoint) {
 		for i, q := range precomputes {
 			if scalarBits[i] == 1 {
 				pnt.Add(&pnt, &q)
@@ -791,6 +791,21 @@ func NewStr(s string) *string {
 	return &s
 }
 
+// NewByteStr decodes a hexadecimal string into a byte slice and returns a pointer to it.
+//
+// Parameters:
+//   - s: a string representing the hexadecimal value.
+//
+// Returns:
+//   - *[]byte: a pointer to the decoded byte slice.
+func NewByteStr(s string) *[]byte {
+	bs, err := hex.DecodeString(s)
+	if err != nil {
+		panic(err)
+	}
+	return &bs
+}
+
 // ValidateKey checks if the given ModNScalar is a valid key.
 //
 // Parameters:
@@ -892,7 +907,7 @@ func joinBytesFixed(size int, bs ...[]byte) []byte {
 //   - an error if the generated point is not on the curve.
 func createRawPubKey(privKey *ModNScalar) (*Point, error) {
 	var p JacobianPoint
-	rawPubKey := p.Mul(privKey, nil).ToAffine()
+	rawPubKey := p.Mul(privKey, GenPoint).ToAffine()
 	if !rawPubKey.Valid() {
 		return nil, &PointError{Message: "point is not on curve"}
 	}
@@ -955,7 +970,7 @@ func createTweakedPubKey(rawPubKey *Point) []byte {
 	if p.Y.IsOdd() {
 		p.Y.Negate(1)
 	}
-	q.Add(p.ToJacobian(), q.Mul(tweak, nil))
+	q.Add(p.ToJacobian(), q.Mul(tweak, GenPoint))
 	qa := q.ToAffine()
 	if qa.Y.IsOdd() {
 		qa.Y.Negate(1)
@@ -1108,7 +1123,7 @@ func signed(msg []byte, privKey, k *ModNScalar) *Signature {
 		p             JacobianPoint
 		buf           [32]byte
 	)
-	point := p.Mul(k, nil).ToAffine()
+	point := p.Mul(k, GenPoint).ToAffine()
 	point.X.PutBytes(&buf)
 	r.SetBytes(&buf)
 	if r.IsZero() {
@@ -1348,7 +1363,7 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 	u1 := new(ModNScalar).Mul2(&e, w).Negate()
 	u2 := new(ModNScalar).Mul2(s, w)
 	var Q, u1G, u2X JacobianPoint
-	u1G.Mul(u1, nil)
+	u1G.Mul(u1, GenPoint)
 	u2X.Mul(u2, &X)
 	Q.Add(&u1G, &u2X)
 	if Q.Eq(IdentityPoint) {

@@ -31,7 +31,7 @@ func main() {
     fmt.Println(w.TaprootAddress())
 
     var p bmt.JacobianPoint
-    p.Mul(w.PrivateKey().Hex(), nil)
+    p.Mul(w.PrivateKey().Hex(), bmt.GenPoint)
     fmt.Println(p.ToAffine().Eq(w.PublicKeyRaw()))
 }
 ```
@@ -54,4 +54,5 @@ Kx4XofogMJhEdvHGSMRdztgEg3BBHs9B18yv9uBe1VphNcpKyMnF
 bc1qdn4nnn59570wlkdn4tq23whw6y5e6c28p7chr5
 38CeDX7CWZ5PAUfMw3pgmF98R8X3U9ePpf
 bc1pvm2y9rm950593kglq758620aew3n2gcfhdcrnt868l2nr3u4yetsduhsra
+true
 ```
