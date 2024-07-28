@@ -141,13 +141,12 @@ Taproot Address: bc1p5utaw0g77graev5yw575c3jnzh8j88ezzw39lgr250ghppwpyccsvjkvyp
 	GenPoint           = NewJacobianPoint(genPointX, genPointY, one)
 	precomputes        = getPrecomputes()
 	IdentityPoint      = NewJacobianPoint(zero, zero, zero)
-	addressTypes       = []string{"legacy", "nested", "segwit"}
-	headers            = [5][4]byte{
+	addressTypes       = []string{"legacy", "nested", "segwit", "taproot"}
+	headers            = [4][4]byte{
 		{0x1b, 0x1c, 0x1d, 0x1e}, // 27 - 30 P2PKH uncompressed
 		{0x1f, 0x20, 0x21, 0x22}, // 31 - 34 P2PKH compressed
 		{0x23, 0x24, 0x25, 0x26}, // 35 - 38 P2WPKH-P2SH compressed (BIP-137)
 		{0x27, 0x28, 0x29, 0x2a}, // 39 - 42 P2WPKH compressed (BIP-137)
-		{0x2b, 0x2c, 0x2d, 0x2e}, // TODO 43 - 46 P2TR
 	}
 	pool = sync.Pool{
 		New: func() any {
@@ -511,7 +510,6 @@ func generate(scalar *ModNScalar) {
 		}
 		scalar.Zero()
 	}
-
 }
 
 // NewPrivateKey generates a new privatekey object.
@@ -868,7 +866,6 @@ func DoubleSHA256(b []byte) []byte {
 		panic(err)
 	}
 	return h2.Sum(nil)
-
 }
 
 // Ripemd160SHA256 computes the RIPEMD160 hash of the SHA-256 hash of the input byte slice.
@@ -1266,11 +1263,11 @@ func rfcSign(msg []byte, privKey *ModNScalar) *Signature {
 //
 // Parameters:
 //   - pubKey: a byte slice representing the public key.
-//   - addrType: a string representing the address type. Valid values are "legacy", "nested", and "segwit".
+//   - addrType: a string representing the address type. Valid values are "legacy", "nested", "segwit" and "taproot".
 //
 // Returns:
 //   - a string representing the Bitcoin address.
-//   - an integer representing the address type. 0 for legacy, 1 for nested, and 2 for segwit.
+//   - an integer representing the address type.
 //   - an error if the address type is invalid.
 func deriveAddress(pubKey []byte, addrType string) (addr string, ver int, err error) {
 	prefix := pubKey[0]
@@ -1289,6 +1286,9 @@ func deriveAddress(pubKey []byte, addrType string) (addr string, ver int, err er
 	if addrType == "segwit" {
 		return createNativeSegwit(pubKey), 3, nil
 	}
+	if addrType == "taproot" {
+		return createTaproot(pubKey), 4, nil
+	}
 	return "", 0, &SignatureError{Message: "invalid address type"}
 
 }
@@ -1304,7 +1304,7 @@ func deriveAddress(pubKey []byte, addrType string) (addr string, ver int, err er
 //   - s: a pointer to a ModNScalar representing the s value of the signature.
 func splitSignature(sig []byte) (byte, *ModNScalar, *ModNScalar, error) {
 	header := sig[0]
-	if header < headers[0][0] || header > headers[4][3] {
+	if header < headers[0][0] || header > headers[3][3] {
 		return 0, nil, nil, &SignatureError{Message: "header byte out of range"}
 	}
 	var (
@@ -1323,17 +1323,17 @@ func splitSignature(sig []byte) (byte, *ModNScalar, *ModNScalar, error) {
 	return header, &r, &s, nil
 }
 
-// VerifyMessage verifies a signed message using the provided address, message, signature, and electrum flag.
+// VerifyMessage verifies a signed message.
 //
 // Parameters:
-//   - address: the address used to sign the message.
-//   - message: the message to be verified.
-//   - signature: the signature to verify the message.
+//   - message (*BitcoinMessage): The signed message to verify.
 //   - electrum: a flag indicating whether to use the electrum signature format.
 //
 // Returns:
 //   - a pointer to a VerifyMessageResult struct containing the verification result and the hex-encoded public key.
 //   - error: an error if any occurred during the verification process.
+//
+// https://github.com/bitcoin/bips/blob/master/bip-0137.mediawiki
 func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult, error) {
 	dsig := make([]byte, base64.StdEncoding.DecodedLen(len(message.signature)))
 	n, err := base64.StdEncoding.Decode(dsig, message.signature)
@@ -1349,10 +1349,7 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 	}
 	uncompressed := false
 	addrType := "legacy"
-	if header >= 43 {
-		header -= 16
-		addrType = ""
-	} else if header >= 39 {
+	if header >= 39 {
 		header -= 12
 		addrType = "segwit"
 	} else if header >= 35 {
@@ -1414,9 +1411,6 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 			PubKey:   hex.EncodeToString(pubKey),
 			Message:  "message failed to verify"}, nil
 	}
-	if addrType == "" {
-		return nil, &SignatureError{Message: "unknown address type"}
-	}
 	addr, _, err := deriveAddress(pubKey, addrType)
 	if err != nil {
 		return nil, err
@@ -1450,6 +1444,8 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 // Returns:
 //   - A pointer to a BitcoinMessage struct representing the signed message.
 //   - An error if there was a problem signing the message.
+//
+// https://github.com/bitcoin/bips/blob/master/bip-0137.mediawiki
 func SignMessage(pk *privatekey, addrType, message string, deterministic, electrum bool) (*BitcoinMessage, error) {
 	var (
 		sig           *Signature

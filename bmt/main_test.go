@@ -933,13 +933,13 @@ func TestVerifyMessageErr(t *testing.T) {
 			errMsg:   "s-value out of range",
 		},
 		{
-			name: "invalid signature: signature R + N >= P",
+			name: "header byte out of range",
 			message: &BitcoinMessage{
 				address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
 				payload:   Message,
 				signature: []byte("LgM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
 			electrum: false,
-			errMsg:   "invalid signature: signature R + N >= P",
+			errMsg:   "header byte out of range",
 		},
 	}
 	for _, testcase := range testcases {
