@@ -17,22 +17,48 @@ import (
 )
 
 func main() {
-    wifStr := bmt.NewStr("Kx4XofogMJhEdvHGSMRdztgEg3BBHs9B18yv9uBe1VphNcpKyMnF")
-    w, _ := bmt.CreateNewWallet(nil, wifStr)
-    fmt.Println(w)
-    fmt.Println()
-    fmt.Println(w.PrivateKey().Hex())
-    fmt.Println(w.PrivateKey().Wif())
-    fmt.Println(w.PublicKey())
-    fmt.Println(w.PublicKeyRaw())
-    fmt.Println(w.LegacyAddress())
-    fmt.Println(w.SegwitAddress())
-    fmt.Println(w.NestedSegwitAddress())
-    fmt.Println(w.TaprootAddress())
+	wifStr := bmt.NewStr("Kx4XofogMJhEdvHGSMRdztgEg3BBHs9B18yv9uBe1VphNcpKyMnF")
+	w, _ := bmt.CreateNewWallet(nil, wifStr)
+	fmt.Println(w)
+	fmt.Println()
+	fmt.Println(w.PrivateKey().Hex())
+	fmt.Println(w.PrivateKey().Wif())
+	fmt.Println(w.PublicKey())
+	fmt.Println(w.PublicKeyRaw())
+	fmt.Println(w.LegacyAddress())
+	fmt.Println(w.SegwitAddress())
+	fmt.Println(w.NestedSegwitAddress())
+	fmt.Println(w.TaprootAddress())
 
-    var p bmt.JacobianPoint
-    p.Mul(w.PrivateKey().Hex(), bmt.GenPoint)
-    fmt.Println(p.ToAffine().Eq(w.PublicKeyRaw()))
+	var p bmt.JacobianPoint
+	p.Mul(w.PrivateKey().Hex(), bmt.GenPoint)      // point multiplication
+	fmt.Println(p.ToAffine().Eq(w.PublicKeyRaw())) // calculated point equals wallet public key
+	// message verification
+	message := `-----BEGIN BITCOIN SIGNED MESSAGE-----
+ECDSA is the most fun I have ever experienced
+-----BEGIN BITCOIN SIGNATURE-----
+16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t
+
+H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
+-----END BITCOIN SIGNATURE-----`
+	bm := bmt.BitcoinMessage{}
+	bmt.ParseRFCMessage(message, &bm)
+	result, err := bmt.VerifyMessage(&bm, false)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(result.Verified)
+	// message signing
+	signedMessage, err := bmt.SignMessage(w.PrivateKey(), // private key
+		"segwit", // address type
+		"ECDSA is the most fun I have ever experienced", // message
+		true,  // deterministic signature
+		false, // electrum format
+	)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(signedMessage)
 }
 ```
 ```shell
@@ -55,6 +81,14 @@ bc1qdn4nnn59570wlkdn4tq23whw6y5e6c28p7chr5
 38CeDX7CWZ5PAUfMw3pgmF98R8X3U9ePpf
 bc1pvm2y9rm950593kglq758620aew3n2gcfhdcrnt868l2nr3u4yetsduhsra
 true
+true
+-----BEGIN BITCOIN SIGNED MESSAGE-----
+ECDSA is the most fun I have ever experienced
+-----BEGIN BITCOIN SIGNATURE-----
+bc1qdn4nnn59570wlkdn4tq23whw6y5e6c28p7chr5
+
+J8xT/nFS2YpzmW6kDCoH4hjjLKjR2k7o9fHq2je/natNdMmYzQ7Gik5EHV1gVbkVOl7M74d7g2fEBl+csGqyqJ8=
+-----END BITCOIN SIGNATURE-----
 ```
 
 ## Benchmarks
@@ -77,7 +111,7 @@ BenchmarkSignMessageNonDeterministic-8             10000            895601 ns/op
 BenchmarkVerifyMessage-8                           10000            417738 ns/op            2013 B/op         34 allocs/op
 BenchmarkConvertToBits-8                           10000               342.4 ns/op             0 B/op          0 allocs/op
 BenchmarkValidateKey-8                             10000                36.67 ns/op            0 B/op          0 allocs/op
-BenchmarkParseRFCMessage-8                         10000               690.1 ns/op           160 B/op          2 allocs/op
+BenchmarkParseRFCMessage-8                         10000               433.4 ns/op             0 B/op          0 allocs/op
 PASS
 ok      github.com/shadowy-pycoder/go-bitcoin-message-tool/bmt  34.127s
 

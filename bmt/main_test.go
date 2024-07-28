@@ -147,9 +147,9 @@ func BenchmarkSignMessageNonDeterministic(b *testing.B) {
 // BenchmarkVerifyMessage measures the performance of VerifyMessage function
 func BenchmarkVerifyMessage(b *testing.B) {
 	bm := &BitcoinMessage{
-		Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
-		Payload:   FancyMessage,
-		Signature: []byte("KHwAJ0Nmy0NCXm1mZj/S58QDfyuODZg6iSPQjSI9JBlsRAEKaJIJb5cH7s7NcPmX3tWiYTs/6lupP0/uCP2b344=")}
+		address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+		payload:   FancyMessage,
+		signature: []byte("KHwAJ0Nmy0NCXm1mZj/S58QDfyuODZg6iSPQjSI9JBlsRAEKaJIJb5cH7s7NcPmX3tWiYTs/6lupP0/uCP2b344=")}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		VerifyMessage(bm, false)
@@ -185,9 +185,10 @@ ECDSA is the most fun I have ever experienced
 
 H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI=
 -----END BITCOIN SIGNATURE-----`
+	var bm BitcoinMessage
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ParseRFCMessage(message)
+		ParseRFCMessage(message, &bm)
 	}
 }
 
@@ -519,9 +520,9 @@ H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd
 -----END BITCOIN SIGNATURE-----
 			`, Message),
 			expected: &BitcoinMessage{
-				Address:   "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
-				Payload:   Message,
-				Signature: []byte("H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI="),
+				address:   "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
+				payload:   Message,
+				signature: []byte("H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI="),
 			},
 		},
 		{
@@ -535,9 +536,9 @@ H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd
 -----END BITCOIN SIGNATURE-----
 			`, FancyMessage),
 			expected: &BitcoinMessage{
-				Address:   "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
-				Payload:   FancyMessage,
-				Signature: []byte("H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI="),
+				address:   "16wrm6zJek6REbxbJSLsBHehn3Lj1vo57t",
+				payload:   FancyMessage,
+				signature: []byte("H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd/jou1VI="),
 			},
 		},
 		{
@@ -550,18 +551,28 @@ H3x5bM2MpXK9MyLLbIGWQjZQNTP6lfuIjmPqMrU7YZ5CCm5bS9L+zCtrfIOJaloDb0mf9QBSEDIs4UCd
 -----BEGIN BITCOIN SIGNED MESSAGE-----
 %s
 			`, Message),
-			expected: nil,
+			expected: &BitcoinMessage{
+				address:   "",
+				payload:   "",
+				signature: nil,
+			},
 		},
 		{
-			name:     "empty message",
-			message:  "",
-			expected: nil,
+			name:    "empty message",
+			message: "",
+			expected: &BitcoinMessage{
+				address:   "",
+				payload:   "",
+				signature: nil,
+			},
 		},
 	}
+
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
-			actual := ParseRFCMessage(testcase.message)
-			require.Equal(t, testcase.expected, actual)
+			var actual BitcoinMessage
+			ParseRFCMessage(testcase.message, &actual)
+			require.Equal(t, testcase.expected, &actual)
 		})
 	}
 }
@@ -587,9 +598,9 @@ func TestSignMessageDeterministic(t *testing.T) {
 			deterministic: true,
 			electrum:      false,
 			expected: &BitcoinMessage{
-				Address:   "133XqEAPNSYfAuPkjPChYLiEM64TnS6f7q",
-				Payload:   Message,
-				Signature: []byte("HxsPQKwkQF5VWA/iEt1cszOIFJFUNqAmIZW5PRaDGWSYIQFD/sPwtqCozKd87CzrQ9huLmgtjdcLnJwpez3uhwc=")},
+				address:   "133XqEAPNSYfAuPkjPChYLiEM64TnS6f7q",
+				payload:   Message,
+				signature: []byte("HxsPQKwkQF5VWA/iEt1cszOIFJFUNqAmIZW5PRaDGWSYIQFD/sPwtqCozKd87CzrQ9huLmgtjdcLnJwpez3uhwc=")},
 		},
 		{
 			name:          "sign message deterministically with nested segwit address",
@@ -599,9 +610,9 @@ func TestSignMessageDeterministic(t *testing.T) {
 			deterministic: true,
 			electrum:      false,
 			expected: &BitcoinMessage{
-				Address:   "3C7MT5Tt3HM8ZF6T14yVsbRFtiBkY1fCZS",
-				Payload:   Message,
-				Signature: []byte("IwxiTLdDP2UwA/ST1hHo3QErhmkM4+epqAs4HLESVvigaak0gJqlU+B3oB4vxsMluKosDr1NW8ZJMA4USmwUMr0=")},
+				address:   "3C7MT5Tt3HM8ZF6T14yVsbRFtiBkY1fCZS",
+				payload:   Message,
+				signature: []byte("IwxiTLdDP2UwA/ST1hHo3QErhmkM4+epqAs4HLESVvigaak0gJqlU+B3oB4vxsMluKosDr1NW8ZJMA4USmwUMr0=")},
 		},
 		{
 			name:          "sign message deterministically with segwit address",
@@ -611,9 +622,9 @@ func TestSignMessageDeterministic(t *testing.T) {
 			deterministic: true,
 			electrum:      false,
 			expected: &BitcoinMessage{
-				Address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
-				Payload:   Message,
-				Signature: []byte("JwGZV037XaS2TOWPJ1daKxOOsn6K4nN9LuDP/gTGr7Fkebu55Lg1pX92A1TivTLoY0/ZVAvAju6Epqoc/5mY5og=")},
+				address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
+				payload:   Message,
+				signature: []byte("JwGZV037XaS2TOWPJ1daKxOOsn6K4nN9LuDP/gTGr7Fkebu55Lg1pX92A1TivTLoY0/ZVAvAju6Epqoc/5mY5og=")},
 		},
 		{
 			name:          "sign fancy message deterministically with segwit address",
@@ -623,9 +634,9 @@ func TestSignMessageDeterministic(t *testing.T) {
 			deterministic: true,
 			electrum:      false,
 			expected: &BitcoinMessage{
-				Address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
-				Payload:   FancyMessage,
-				Signature: []byte("J3RLthJCqVY5DETEpDLkep92et9dXuntiTWCxwF/lYRPa9mACkdJzT6iCq3qHox4pu9AwNR148mxs2nAqzmAcls=")},
+				address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
+				payload:   FancyMessage,
+				signature: []byte("J3RLthJCqVY5DETEpDLkep92et9dXuntiTWCxwF/lYRPa9mACkdJzT6iCq3qHox4pu9AwNR148mxs2nAqzmAcls=")},
 		},
 		{
 			name:          "sign message deterministically with segwit address using electrum standard",
@@ -635,9 +646,9 @@ func TestSignMessageDeterministic(t *testing.T) {
 			deterministic: true,
 			electrum:      true,
 			expected: &BitcoinMessage{
-				Address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
-				Payload:   Message,
-				Signature: []byte("HwGZV037XaS2TOWPJ1daKxOOsn6K4nN9LuDP/gTGr7Fkebu55Lg1pX92A1TivTLoY0/ZVAvAju6Epqoc/5mY5og=")},
+				address:   "bc1q8ds45ycuuqcgejj0yzpmvsdqntlx9hx6xre05k",
+				payload:   Message,
+				signature: []byte("HwGZV037XaS2TOWPJ1daKxOOsn6K4nN9LuDP/gTGr7Fkebu55Lg1pX92A1TivTLoY0/ZVAvAju6Epqoc/5mY5og=")},
 		},
 	}
 
@@ -707,7 +718,7 @@ func TestSignMessageNonDeterministic(t *testing.T) {
 			pk, _ := NewPrivateKey(nil, testcase.privKey)
 			actual, err := SignMessage(pk, testcase.addrType, testcase.message, testcase.deterministic, testcase.electrum)
 			require.NoError(t, err)
-			require.Equal(t, testcase.expected, actual.Address)
+			require.Equal(t, testcase.expected, actual.address)
 		})
 	}
 }
@@ -775,9 +786,9 @@ func TestVerifyMessage(t *testing.T) {
 		{
 			name: "verify message with legacy address",
 			message: &BitcoinMessage{
-				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
-				Payload:   Message,
-				Signature: []byte("IEM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
+				address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				payload:   Message,
+				signature: []byte("IEM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
 			electrum: false,
 			expected: &VerifyMessageResult{
 				Verified: true,
@@ -787,9 +798,9 @@ func TestVerifyMessage(t *testing.T) {
 		{
 			name: "verify message with nested segwit address",
 			message: &BitcoinMessage{
-				Address:   "34SXqp4aYmxY46nR68W5tTpD6YEHp1FKGv",
-				Payload:   Message,
-				Signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
+				address:   "34SXqp4aYmxY46nR68W5tTpD6YEHp1FKGv",
+				payload:   Message,
+				signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
 			electrum: false,
 			expected: &VerifyMessageResult{
 				Verified: true,
@@ -799,9 +810,9 @@ func TestVerifyMessage(t *testing.T) {
 		{
 			name: "verify message with segwit address",
 			message: &BitcoinMessage{
-				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
-				Payload:   Message,
-				Signature: []byte("J1Pgcc6VOqkcNNeiQHwjcnoYixiCM29cXUvuP6rhG338XSuaRsJpV419nbWQzpX+aVLWZZ8j/HGW6Cud3eEg+3A=")},
+				address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				payload:   Message,
+				signature: []byte("J1Pgcc6VOqkcNNeiQHwjcnoYixiCM29cXUvuP6rhG338XSuaRsJpV419nbWQzpX+aVLWZZ8j/HGW6Cud3eEg+3A=")},
 			electrum: false,
 			expected: &VerifyMessageResult{
 				Verified: true,
@@ -811,9 +822,9 @@ func TestVerifyMessage(t *testing.T) {
 		{
 			name: "verify message with segwit address and electrum standard",
 			message: &BitcoinMessage{
-				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
-				Payload:   Message,
-				Signature: []byte("H1Pgcc6VOqkcNNeiQHwjcnoYixiCM29cXUvuP6rhG338XSuaRsJpV419nbWQzpX+aVLWZZ8j/HGW6Cud3eEg+3A=")},
+				address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				payload:   Message,
+				signature: []byte("H1Pgcc6VOqkcNNeiQHwjcnoYixiCM29cXUvuP6rhG338XSuaRsJpV419nbWQzpX+aVLWZZ8j/HGW6Cud3eEg+3A=")},
 			electrum: true,
 			expected: &VerifyMessageResult{
 				Verified: true,
@@ -823,9 +834,9 @@ func TestVerifyMessage(t *testing.T) {
 		{
 			name: "verify fancy message with segwit address",
 			message: &BitcoinMessage{
-				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
-				Payload:   FancyMessage,
-				Signature: []byte("KHwAJ0Nmy0NCXm1mZj/S58QDfyuODZg6iSPQjSI9JBlsRAEKaJIJb5cH7s7NcPmX3tWiYTs/6lupP0/uCP2b344=")},
+				address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				payload:   FancyMessage,
+				signature: []byte("KHwAJ0Nmy0NCXm1mZj/S58QDfyuODZg6iSPQjSI9JBlsRAEKaJIJb5cH7s7NcPmX3tWiYTs/6lupP0/uCP2b344=")},
 			electrum: false,
 			expected: &VerifyMessageResult{
 				Verified: true,
@@ -835,9 +846,9 @@ func TestVerifyMessage(t *testing.T) {
 		{
 			name: "verify message with segwit address and wrong signature",
 			message: &BitcoinMessage{
-				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
-				Payload:   Message,
-				Signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
+				address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				payload:   Message,
+				signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
 			electrum: false,
 			expected: &VerifyMessageResult{
 				Verified: false,
@@ -847,9 +858,9 @@ func TestVerifyMessage(t *testing.T) {
 		{
 			name: "verify message with segwit address and wrong signature and electrum standard",
 			message: &BitcoinMessage{
-				Address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
-				Payload:   Message,
-				Signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
+				address:   "bc1qflpqmegknastcgs39zeza6jy23nzumayc3za2t",
+				payload:   Message,
+				signature: []byte("I0lwEpgqjrhQteZWeic539NohOyXi2DpbT16pSE7dygXXdiVpJptGW81caI2rxmuIAoig+IaebNaVCmRQNpEN7M=")},
 			electrum: true,
 			expected: &VerifyMessageResult{
 				Verified: false,
@@ -879,54 +890,54 @@ func TestVerifyMessageErr(t *testing.T) {
 		{
 			name: "signature decode error",
 			message: &BitcoinMessage{
-				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
-				Payload:   Message,
-				Signature: []byte("tests")},
+				address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				payload:   Message,
+				signature: []byte("tests")},
 			electrum: false,
 			errMsg:   "decode error",
 		},
 		{
 			name: "signature is too short",
 			message: &BitcoinMessage{
-				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
-				Payload:   Message,
-				Signature: []byte("test")},
+				address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				payload:   Message,
+				signature: []byte("test")},
 			electrum: false,
 			errMsg:   "signature must be 65 bytes long",
 		},
 		{
 			name: "signature has an unsupported header",
 			message: &BitcoinMessage{
-				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
-				Payload:   Message,
-				Signature: []byte("LwM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
+				address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				payload:   Message,
+				signature: []byte("LwM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
 			electrum: false,
 			errMsg:   "header byte out of range",
 		},
 		{
 			name: "signature r-value is out of range",
 			message: &BitcoinMessage{
-				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
-				Payload:   Message,
-				Signature: []byte("IgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")},
+				address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				payload:   Message,
+				signature: []byte("IgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")},
 			electrum: false,
 			errMsg:   "r-value out of range",
 		},
 		{
 			name: "signature s-value is out of range",
 			message: &BitcoinMessage{
-				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
-				Payload:   Message,
-				Signature: []byte("IgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")},
+				address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				payload:   Message,
+				signature: []byte("IgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")},
 			electrum: false,
 			errMsg:   "s-value out of range",
 		},
 		{
 			name: "invalid signature: signature R + N >= P",
 			message: &BitcoinMessage{
-				Address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
-				Payload:   Message,
-				Signature: []byte("LgM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
+				address:   "1JeARtmwjd8smhvVcS7PW9dG7rhDXJZ4ao",
+				payload:   Message,
+				signature: []byte("LgM/bGa3Vl4lZF+G12+gMMw9AeowJq0+UHMW557DuP3LcVafaeiX91w6u1/aj9TNj6/3GkHsqYtMl2X40YHL/qQ=")},
 			electrum: false,
 			errMsg:   "invalid signature: signature R + N >= P",
 		},

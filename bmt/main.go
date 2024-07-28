@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/golangcrypto/ripemd160"
@@ -451,10 +452,39 @@ func (sig *Signature) S() ModNScalar {
 	return sig.s
 }
 
+// NewBitcoinMessage creates a new BitcoinMessage struct with the given address, payload, and signature.
+//
+// Parameters:
+//   - address: the address associated with the message.
+//   - payload: the content of the message.
+//   - signature: the signature of the message.
+//
+// Returns:
+//   - A pointer to a BitcoinMessage struct with the given address, payload, and signature.
+func NewBitcoinMessage(address, payload, signature string) *BitcoinMessage {
+	return &BitcoinMessage{
+		address:   address,
+		payload:   payload,
+		signature: []byte(signature)}
+}
+
 type BitcoinMessage struct {
-	Address   string
-	Payload   string
-	Signature []byte
+	address   string
+	payload   string
+	signature []byte
+}
+
+// String returns a string representation of message in RFC2440-like format
+//
+// https://datatracker.ietf.org/doc/html/rfc2440
+func (bm *BitcoinMessage) String() string {
+	return fmt.Sprintf(`-----BEGIN BITCOIN SIGNED MESSAGE-----
+%s
+-----BEGIN BITCOIN SIGNATURE-----
+%s
+
+%s
+-----END BITCOIN SIGNATURE-----`, bm.payload, bm.address, bm.signature)
 }
 
 type VerifyMessageResult struct {
@@ -1305,8 +1335,8 @@ func splitSignature(sig []byte) (byte, *ModNScalar, *ModNScalar, error) {
 //   - a pointer to a VerifyMessageResult struct containing the verification result and the hex-encoded public key.
 //   - error: an error if any occurred during the verification process.
 func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult, error) {
-	dsig := make([]byte, base64.StdEncoding.DecodedLen(len(message.Signature)))
-	n, err := base64.StdEncoding.Decode(dsig, message.Signature)
+	dsig := make([]byte, base64.StdEncoding.DecodedLen(len(message.signature)))
+	n, err := base64.StdEncoding.Decode(dsig, message.signature)
 	if err != nil {
 		return nil, &SignatureError{Message: "decode error", Err: err}
 	}
@@ -1354,7 +1384,7 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 	X.Y.Set(y.Normalize())
 	X.Z.SetInt(1)
 	var e ModNScalar
-	e.SetByteSlice(DoubleSHA256(msgMagic(message.Payload)))
+	e.SetByteSlice(DoubleSHA256(msgMagic(message.payload)))
 	w := new(ModNScalar).InverseValNonConst(r)
 	u1 := new(ModNScalar).Mul2(&e, w).Negate()
 	u2 := new(ModNScalar).Mul2(s, w)
@@ -1372,11 +1402,11 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 			if err != nil {
 				return nil, err
 			}
-			if addr == message.Address {
+			if addr == message.address {
 				return &VerifyMessageResult{
 					Verified: true,
 					PubKey:   hex.EncodeToString(pubKey),
-					Message:  fmt.Sprintf("message verified to be from %s", message.Address)}, nil
+					Message:  fmt.Sprintf("message verified to be from %s", message.address)}, nil
 			}
 		}
 		return &VerifyMessageResult{
@@ -1391,11 +1421,11 @@ func VerifyMessage(message *BitcoinMessage, electrum bool) (*VerifyMessageResult
 	if err != nil {
 		return nil, err
 	}
-	if addr == message.Address {
+	if addr == message.address {
 		return &VerifyMessageResult{
 			Verified: true,
 			PubKey:   hex.EncodeToString(pubKey),
-			Message:  fmt.Sprintf("message verified to be from %s", message.Address)}, nil
+			Message:  fmt.Sprintf("message verified to be from %s", message.address)}, nil
 	}
 	return &VerifyMessageResult{
 		Verified: false,
@@ -1454,9 +1484,9 @@ func SignMessage(pk *privatekey, addrType, message string, deterministic, electr
 		buf[0] = header
 		signature := make([]byte, base64.StdEncoding.EncodedLen(len(buf)))
 		base64.StdEncoding.Encode(signature, buf[:])
-		signedMessage.Address = address
-		signedMessage.Payload = message
-		signedMessage.Signature = signature
+		signedMessage.address = address
+		signedMessage.payload = message
+		signedMessage.signature = signature
 		result, err := VerifyMessage(&signedMessage, electrum)
 		if err != nil {
 			return nil, err
@@ -1468,19 +1498,6 @@ func SignMessage(pk *privatekey, addrType, message string, deterministic, electr
 	return nil, &SignatureError{Message: "invalid signature parameters"}
 }
 
-// PrintMessage prints signed message in RFC2440-like format
-//
-// https://datatracker.ietf.org/doc/html/rfc2440
-func PrintMessage(bm *BitcoinMessage) {
-	fmt.Println(beginSignedMessage)
-	fmt.Println(bm.Payload)
-	fmt.Println(beginSignature)
-	fmt.Println(bm.Address)
-	fmt.Println()
-	fmt.Println(string(bm.Signature))
-	fmt.Println(endSignature)
-}
-
 // trimCRLF removes leading and trailing carriage return and line feed characters from the input string.
 func trimCRLF(s string) string {
 	msg := strings.TrimPrefix(s, "\r")
@@ -1490,22 +1507,22 @@ func trimCRLF(s string) string {
 	return msg
 }
 
-// // ParseRFCMessage parses a given message (RFC2440-like format) string into a BitcoinMessage struct.
-// //
-// // Parameters:
-// //   - m: a string representing the message to be parsed.
-// //
-// // Returns:
-// //   - *BitcoinMessage: a pointer to a BitcoinMessage struct containing the parsed message data.
-func ParseRFCMessage(m string) *BitcoinMessage {
+// ParseRFCMessage parses a given message (RFC2440-like format) string into a BitcoinMessage struct.
+//
+// Parameters:
+//   - m: a string representing the message to be parsed.
+//   - bm: a pointer to a BitcoinMessage struct where the parsed message data will be stored.
+//
+// Returns: None.
+func ParseRFCMessage(m string, bm *BitcoinMessage) {
 	ind1 := strings.Index(m, beginSignedMessage)
 	ind2 := strings.Index(m, beginSignature)
 	ind3 := strings.Index(m, endSignature)
 	if ind1 == -1 || ind2 == -1 || ind3 == -1 {
-		return nil
+		return
 	}
 	if ind2 < ind1 || ind3 < ind2 {
-		return nil
+		return
 	}
 	partOne := m[ind1+len(beginSignedMessage) : ind2]
 	partTwo := m[ind2+len(beginSignature) : ind3]
@@ -1513,18 +1530,18 @@ func ParseRFCMessage(m string) *BitcoinMessage {
 	sigPart := trimCRLF(partTwo)
 	addrInd := strings.Index(sigPart, "\n")
 	if addrInd == -1 {
-		return nil
+		return
 	}
 	address := sigPart[:addrInd]
 	sigInd := strings.LastIndex(sigPart, "\n")
 	if sigInd == -1 {
-		return nil
+		return
 	}
-	signature := []byte(trimCRLF(sigPart[sigInd:]))
-	return &BitcoinMessage{
-		Address:   address,
-		Payload:   message,
-		Signature: signature}
+	sigstr := trimCRLF(sigPart[sigInd:])
+	signature := unsafe.Slice(unsafe.StringData(sigstr), len(sigstr))
+	bm.address = address
+	bm.payload = message
+	bm.signature = signature
 }
 
 // CreateWallets generates a specified number of wallets and either prints them to stdout or writes them to a file.
@@ -1655,7 +1672,7 @@ func (sc *cmdSign) Run() error {
 	if err != nil {
 		return fmt.Errorf("bmt: failed signing message: %w", err)
 	}
-	PrintMessage(bm)
+	fmt.Println(bm)
 	return nil
 }
 
@@ -1669,10 +1686,10 @@ func newCmdVerify() *cmdVerify {
 	vc.fs.BoolVar(&vc.electrum, "e", false, "verify electrum-like signature")
 	vc.fs.BoolVar(&vc.recpub, "r", false, "recover public key")
 	vc.fs.BoolVar(&vc.verbose, "v", false, "show full message")
-	vc.fs.StringVar(&vc.message.Address, "a", "", "ADDRESS bitcoin address")
-	vc.fs.StringVar(&vc.message.Payload, "m", "", "[MESSAGE ...] message to verify")
+	vc.fs.StringVar(&vc.message.address, "a", "", "ADDRESS bitcoin address")
+	vc.fs.StringVar(&vc.message.payload, "m", "", "[MESSAGE ...] message to verify")
 	vc.fs.Func("s", "SIGNATURE bitcoin signature in base64 format", func(flagValue string) error {
-		vc.message.Signature = []byte(flagValue)
+		vc.message.signature = []byte(flagValue)
 		return nil
 	})
 	vc.fs.BoolFunc("f", "verify message in RFC2440-like format", func(flagValue string) error {
@@ -1686,12 +1703,13 @@ func newCmdVerify() *cmdVerify {
 				break
 			}
 		}
-		message := ParseRFCMessage(strings.Join(lines, "\n"))
-		if message == nil {
+		var message BitcoinMessage
+		ParseRFCMessage(strings.Join(lines, "\n"), &message)
+		if message.address == "" {
 			fmt.Fprintln(os.Stderr, "bmt: failed parsing message")
 			os.Exit(2)
 		}
-		vc.message = message
+		vc.message = &message
 		vc.full = true
 		return nil
 	})
